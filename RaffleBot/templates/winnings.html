@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Winnings</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: url('/static/background-image.png') no-repeat center center fixed;
+            background-size: cover;
+            color: #fff;
+        }
+        h1 {
+            text-align: center;
+            color: #dcdcdc;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+        li {
+            margin-bottom: 15px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 10px;
+        }
+        .back-button {
+            display: block;
+            width: calc(100% - 20px);
+            max-width: 200px;
+            margin: 20px auto;
+            padding: 10px;
+            text-align: center;
+            background: #6a0dad;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .back-button:hover {
+            background: #8b00ff;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <h1>Your Winnings</h1>
+    <ul>
+        {% for item in winnings %}
+        <li>
+            Item: "{{ item.name }}"
+            {% if item.code %} - Code: {{ item.code }} {% endif %}
+        </li>
+        {% else %}
+        <li>You have no winnings yet.</li>
+        {% endfor %}
+    </ul>
+    <a href="/dashboard" class="back-button">Back to Dashboard</a>
+</body>
+</html>

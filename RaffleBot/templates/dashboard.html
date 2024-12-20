@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: url('background-image.png') no-repeat center center fixed;
+            background-size: cover;
+            color: #fff;
+        }
+        h1, h2 {
+            color: #dcdcdc;
+            text-align: center;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+        li {
+            margin-bottom: 15px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 10px;
+        }
+        button {
+            display: inline-block;
+            width: calc(100% - 20px);
+            margin: 5px auto;
+            padding: 10px;
+            background: #6a0dad;
+            color: #fff;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #8b00ff;
+        }
+        a {
+            text-decoration: none;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to Your Dashboard</h1>
+
+    <h2>Your Giveaways</h2>
+    <ul>
+        {% for giveaway in giveaways %}
+        <li>
+            <strong>{{ giveaway.title }}</strong> (ID: {{ giveaway.id }})<br>
+            Frequency: {{ giveaway.frequency }} seconds<br>
+            <button>
+                <a href="/giveaway/edit/{{ giveaway.id }}">Edit Giveaway</a>
+            </button>
+            <button>
+                <a href="/giveaway/start/{{ giveaway.id }}">Start Giveaway</a>
+            </button>
+            <button>
+                <a href="/giveaway/delete/{{ giveaway.id }}">Delete Giveaway</a>
+            </button>
+        </li>
+        {% else %}
+        <li>No giveaways found.</li>
+        {% endfor %}
+    </ul>    
+
+    <button>
+        <a href="/giveaway/create">Create New Giveaway</a>
+    </button>
+
+    <button>
+        <a href="/winnings">View Your Winnings</a>
+    </button>
+</body>
+</html>

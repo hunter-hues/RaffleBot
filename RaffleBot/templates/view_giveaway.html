@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ giveaway.title }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: url('background-image.png') no-repeat center center fixed;
+            background-size: cover;
+            color: #fff;
+        }
+        h1, p {
+            text-align: center;
+            color: #dcdcdc;
+        }
+    </style>
+</head>
+<body>
+    <h1>Giveaway: {{ giveaway.title }}</h1>
+    <p>Frequency: {{ giveaway.frequency }}</p>
+    <p>Threshold: {{ giveaway.threshold }}</p>
+    <p>Status: {% if giveaway.active %}Active{% else %}Inactive{% endif %}</p>
+    <p>Creator ID: {{ giveaway.creator_id }}</p>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Giveaway</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: url('background-image.png') no-repeat center center fixed;
+            background-size: cover;
+            color: #fff;
+        }
+        h1, h2, h3 {
+            color: #dcdcdc;
+            text-align: center;
+        }
+        form {
+            max-width: 400px;
+            margin: auto;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+        }
+        label {
+            display: block;
+            margin: 10px 0 5px;
+        }
+        input {
+            width: calc(100% - 20px);
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        button {
+            display: block;
+            width: calc(100% - 20px);
+            margin: 5px auto;
+            padding: 10px;
+            background: #6a0dad;
+            color: #fff;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #8b00ff;
+        }
+        a {
+            text-decoration: none;
+            color: #6a0dad;
+            display: inline-block;
+            text-align: center;
+            margin-top: 10px;
+        }
+        a:hover {
+            color: #8b00ff;
+        }
+        .container {
+            display: flex;
+            align-items: flex-start; /* Aligns both boxes at the top */
+            justify-content: space-between;
+            gap: 20px;
+            margin-top: 20px; /* Adds space between the top box and these boxes */
+        }
+        .add-item, .items {
+            flex: 1;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+            box-sizing: border-box;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+        li {
+            margin-bottom: 15px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Edit Giveaway</h1>
+    <form method="POST" action="/giveaway/edit/{{ giveaway.id }}">
+        <label for="title">Title:</label>
+        <input type="text" id="title" name="title" value="{{ giveaway.title }}" required>
+
+        <label for="frequency">Frequency (seconds):</label>
+        <input type="number" id="frequency" name="frequency" value="{{ giveaway.frequency }}" required>
+
+        <label for="threshold">Threshold (empty rounds before ending):</label>
+        <input type="number" id="threshold" name="threshold" value="{{ giveaway.threshold }}" required>
+
+        <button type="submit">Save Changes</button>
+    </form>
+
+    <div class="container">
+        <!-- Add Item Form -->
+        <div class="add-item">
+            <h3>Add a New Item</h3>
+            <form method="POST" action="/giveaway/add-item/{{ giveaway.id }}">
+                <label for="name">Name:</label>
+                <input type="text" id="name" name="name" required>
+
+                <label for="code">Code:</label>
+                <input type="text" id="code" name="code">
+
+                <button type="submit">Add Item</button>
+            </form>
+        </div>
+
+        <!-- Items List -->
+        <div class="items">
+            <h2>Items</h2>
+            <ul>
+                {% for item in giveaway.items or [] %}
+                <li>
+                    {{ item.name }} ({{ item.code or "No code" }}) 
+                    - {% if item.is_won %} Won by: {{ item.winner_username }} {% else %} Not won yet {% endif %}
+                    <button onclick="removeItem('{{ item.id }}')">Remove</button>
+                </li>
+                {% else %}
+                <li>No items added yet.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <a href="/dashboard">Back to Dashboard</a>
+
+    <script>
+        function removeItem(itemId) {
+            fetch(`/giveaway/remove-item/${itemId}`, {
+                method: "POST",
+            })
+            .then(response => {
+                if (response.ok) {
+                    location.reload();
+                } else {
+                    alert("Failed to remove the item.");
+                }
+            })
+            .catch(error => {
+                console.error("Error removing the item:", error);
+                alert("An error occurred while trying to remove the item.");
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Giveaway</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: url('/templates/background-image.png') no-repeat center center fixed;
+            background-size: cover;
+            color: #fff;
+        }
+        h1 {
+            text-align: center;
+            color: #dcdcdc;
+        }
+        form {
+            max-width: 400px;
+            margin: auto;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+        }
+        label {
+            display: block;
+            margin: 10px 0 5px;
+        }
+        input {
+            width: calc(100% - 20px); /* Reduce width slightly */
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        button {
+            display: block;
+            width: calc(100% - 20px); /* Keep buttons consistent with inputs */
+            margin: 0 auto;
+            padding: 10px;
+            background: #6a0dad;
+            color: #fff;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #8b00ff;
+        }
+        a {
+            text-decoration: none;
+            color: #6a0dad;
+            display: inline-block;
+            margin-top: 10px;
+            text-align: center;
+            width: 100%;
+        }
+        a:hover {
+            color: #8b00ff;
+        }
+    </style>
+</head>
+<body>
+    <h1>Create Giveaway</h1>
+    <form method="POST" action="/giveaway/create">
+        <label for="title">Title:</label>
+        <input type="text" id="title" name="title" required>
+
+        <label for="frequency">Frequency (seconds):</label>
+        <input type="number" id="frequency" name="frequency" required>
+
+        <label for="threshold">Threshold (empty rounds before ending):</label>
+        <input type="number" id="threshold" name="threshold" value="3" required>
+
+        <button type="submit">Create Giveaway</button>
+    </form>
+
+    <a href="/dashboard">Back to Dashboard</a>
+</body>
+</html>
