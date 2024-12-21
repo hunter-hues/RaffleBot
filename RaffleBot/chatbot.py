@@ -8,12 +8,12 @@ import threading
 
 BOT_NICK = ""
 BOT_TOKEN = ""
-BOT_PREFIX = "!" 
+BOT_PREFIX = "!"
 CHANNEL = ""
 
 active_giveaway = None
 entries = []
-giveaway_task = None
+giveaway_task = None 
 lock = threading.Lock()
 
 def is_giveaway_owner(ctx, giveaway):
@@ -28,7 +28,7 @@ class Bot(commands.Bot):
         super().__init__(token=BOT_TOKEN, prefix=BOT_PREFIX, initial_channels=[CHANNEL])
         self.giveaway_id = giveaway_id
         self._connected_channels = []
-        self._nick = BOT_NICK
+        self._nick = BOT_NICK 
 
     @property
     def connected_channels(self):
@@ -51,7 +51,7 @@ class Bot(commands.Bot):
 
         print(f"Bot is online as {self.nick}!")
 
-        self.connected_channels = list(self.connected_channels) or [CHANNEL]
+        self.connected_channels = list(self.connected_channels) or [CHANNEL] 
 
         print(f"Connected channels: {self.connected_channels}")
 
@@ -229,8 +229,8 @@ class Bot(commands.Bot):
 
                             item.is_won = True
                             if winner:
-                                item.winner_id = winner.id 
-                            item.winner_username = winner_name
+                                item.winner_id = winner.id  
+                            item.winner_username = winner_name 
                             db_session.commit()
 
                             if self.connected_channels:
@@ -294,7 +294,7 @@ class Bot(commands.Bot):
             print(f"Error during bot shutdown: {e}")
         finally:
             print("Exiting system process.")
-            os._exit(0)
+            os._exit(0) 
 
 
 if __name__ == "__main__":

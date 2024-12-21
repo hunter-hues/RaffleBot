@@ -38,7 +38,6 @@ def auth_twitch():
 
 @app.route("/auth/twitch/callback")
 def auth_twitch_callback():
-    """Handle Twitch OAuth callback."""
     code = request.args.get("code")
     if not code:
         return "Authorization failed: missing code", 400
@@ -192,10 +191,6 @@ def list_giveaways():
 
 @app.route("/giveaway/delete/<int:id>", methods=["POST", "GET"])
 def delete_giveaway(id):
-    """
-    Deletes a giveaway while retaining won items in the database.
-    Retained won items will keep their `giveaway_id`.
-    """
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
@@ -233,7 +228,6 @@ def delete_giveaway(id):
 
 @app.route("/giveaway/start/<int:giveaway_id>")
 def start_giveaway(giveaway_id):
-    """Start the giveaway and launch the chatbot."""
     lock_file = "chatbot.lock"
 
     if os.path.exists(lock_file):
@@ -301,9 +295,6 @@ def edit_giveaway(id):
 
 @app.route("/giveaway/view/<int:giveaway_id>", methods=["GET"])
 def view_giveaway(giveaway_id):
-    """
-    View a giveaway and handle active or expired states.
-    """
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
@@ -390,7 +381,6 @@ def remove_item(item_id):
 
 @app.route("/giveaway/stop/<int:giveaway_id>")
 def stop_giveaway(giveaway_id):
-    """Stop the giveaway and terminate the chatbot."""
     lock_file = "chatbot.lock"
 
     if giveaway_id in chatbot_processes:
