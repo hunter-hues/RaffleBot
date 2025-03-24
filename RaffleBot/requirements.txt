@@ -6,3 +6,4 @@ twitchio
 gunicorn
 requests
 python-dotenv
+psutil
