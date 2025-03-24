@@ -7,3 +7,4 @@ gunicorn
 requests
 python-dotenv
 psutil
+flask-limiter
