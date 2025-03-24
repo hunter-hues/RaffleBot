@@ -5,3 +5,4 @@ pytest
 twitchio
 gunicorn
 requests
+pyhton-dotenv
