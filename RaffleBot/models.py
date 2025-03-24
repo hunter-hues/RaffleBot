@@ -3,11 +3,12 @@ from sqlalchemy.orm import relationship
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, validates
 import re
+import os  
 
-DATABASE_URL = "sqlite:///giveaway.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///giveaway.db")  # Uses env variable or defaults to SQLite
+engine = create_engine(DATABASE_URL, echo=True)  # `echo=True` helps with debugging  
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
 
 class User(Base):
     __tablename__ = "users"

@@ -6,10 +6,10 @@ import sys
 import os
 import threading
 
-BOT_NICK = ""
-BOT_TOKEN = ""
+BOT_NICK = "rafflebot_giveaways"
+BOT_TOKEN = "4gpbhy6ub5fbrn69jsujrma5nkuhqw"
 BOT_PREFIX = "!"
-CHANNEL = ""
+CHANNEL = "rafflebot_giveaways"
 
 active_giveaway = None
 entries = []
