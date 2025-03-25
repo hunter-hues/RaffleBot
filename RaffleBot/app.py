@@ -10,6 +10,7 @@ import psutil
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import re
+from waitress import serve
 
 load_dotenv()
 app = Flask(__name__)
@@ -420,5 +421,4 @@ def winnings():
     return render_template("winnings.html", winnings=winnings)
 
 #if __name__ == "__main__":
-#    port = int(os.environ.get("PORT", 5000))  # Default to 5000 if PORT is not set
-#    app.run(host="0.0.0.0", port=port)
+#    serve(app, host='0.0.0.0', port=5000)

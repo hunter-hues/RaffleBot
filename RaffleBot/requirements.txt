@@ -3,7 +3,7 @@ SQLAlchemy
 psycopg2-binary
 pytest
 twitchio
-gunicorn
+waitress
 requests
 python-dotenv
 psutil
