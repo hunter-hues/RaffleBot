@@ -11,10 +11,12 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import re
 from waitress import serve
+import threading
+import chatbot  # Import your chatbot module
 
 load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+app.secret_key = os.getenv("SECRET_KEY", os.urandom(24))
 limiter = Limiter(
     get_remote_address,
     app=app,
@@ -23,9 +25,9 @@ limiter = Limiter(
 
 CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
-REDIRECT_URI = "http://localhost:5000/auth/twitch/callback"
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/twitch/callback")
 
-chatbot_processes = {}
+chatbot_threads = {}
 
 @app.route("/")
 def home():
@@ -229,17 +231,9 @@ def delete_giveaway(id):
 
 @app.route("/giveaway/start/<int:giveaway_id>")
 def start_giveaway(giveaway_id):
-    lock_file = "chatbot.lock"
-
-    if os.path.exists(lock_file):
-        with open(lock_file, "r") as f:
-            pid = int(f.read().strip())
-        if psutil.pid_exists(pid):
-            return "A chatbot is already running. Please wait for it to finish.", 400
-        else:
-            print(f"Stale lock file found with PID: {pid}. Removing it.")
-            os.remove(lock_file)
-
+    # Check if a thread already exists for this giveaway
+    if giveaway_id in chatbot_threads and chatbot_threads[giveaway_id].is_alive():
+        return "A chatbot is already running for this giveaway.", 400
 
     db_session = SessionLocal()
     giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id).first()
@@ -249,10 +243,17 @@ def start_giveaway(giveaway_id):
         return "Giveaway not found.", 404
 
     try:
-        process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id)])
-        chatbot_processes[giveaway_id] = process
-        with open(lock_file, "w") as f:
-            f.write(str(process.pid))
+        # Start a new thread for this chatbot
+        thread = threading.Thread(
+            target=chatbot.start_chatbot,
+            args=(giveaway_id,)
+        )
+        thread.daemon = True  # This makes the thread exit when the main program exits
+        thread.start()
+        
+        # Store the thread
+        chatbot_threads[giveaway_id] = thread
+        
         return redirect("/dashboard")
     except Exception as e:
         return f"Failed to start chatbot: {str(e)}", 500
@@ -382,21 +383,20 @@ def remove_item(item_id):
 
 @app.route("/giveaway/stop/<int:giveaway_id>")
 def stop_giveaway(giveaway_id):
-    lock_file = "chatbot.lock"
-
-    if giveaway_id in chatbot_processes:
-        process = chatbot_processes.pop(giveaway_id)
-        process.terminate()
-        process.wait()
-        print(f"Terminated chatbot process for giveaway {giveaway_id}")
-
-    if os.path.exists(lock_file):
-        os.remove(lock_file)
-        print("Lock file removed successfully.")
+    result = chatbot.stop_chatbot(giveaway_id)
+    
+    # Mark giveaway as inactive in the database
+    db_session = SessionLocal()
+    giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id).first()
+    if giveaway:
+        giveaway.active = False
+        db_session.commit()
+    db_session.close()
+    
+    if result:
+        return redirect("/dashboard")
     else:
-        print("No lock file found.")
-
-    return "No running chatbot found for this giveaway.", 404
+        return "No running chatbot found for this giveaway.", 404
 
 
 @app.route("/winnings")
@@ -420,5 +420,9 @@ def winnings():
 
     return render_template("winnings.html", winnings=winnings)
 
-#if __name__ == "__main__":
-#    serve(app, host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    if os.getenv("ENVIRONMENT") == "development":
+        app.run(host="0.0.0.0", port=port, debug=True)
+    else:
+        serve(app, host="0.0.0.0", port=port)
