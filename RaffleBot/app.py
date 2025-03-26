@@ -10,13 +10,10 @@ import psutil
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import re
-from waitress import serve
-import threading
-import chatbot  # Import your chatbot module
 
 load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", os.urandom(24))
+app.secret_key = os.urandom(24)
 limiter = Limiter(
     get_remote_address,
     app=app,
@@ -25,9 +22,9 @@ limiter = Limiter(
 
 CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
-REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/twitch/callback")
+REDIRECT_URI = "http://localhost:5000/auth/twitch/callback"
 
-chatbot_threads = {}
+chatbot_processes = {}
 
 @app.route("/")
 def home():
@@ -96,8 +93,12 @@ def auth_twitch_callback():
             user = User(
                 twitch_id=user_info["id"],
                 username=user_info["display_name"],
+                channel_name=user_info["display_name"].lower()
             )
             db_session.add(user)
+            db_session.commit()
+        else:
+            user.channel_name = user_info["display_name"].lower()
             db_session.commit()
 
         session["user_id"] = user.id
@@ -231,29 +232,40 @@ def delete_giveaway(id):
 
 @app.route("/giveaway/start/<int:giveaway_id>")
 def start_giveaway(giveaway_id):
-    # Check if a thread already exists for this giveaway
-    if giveaway_id in chatbot_threads and chatbot_threads[giveaway_id].is_alive():
-        return "A chatbot is already running for this giveaway.", 400
+    lock_file = "chatbot.lock"
+
+    if os.path.exists(lock_file):
+        with open(lock_file, "r") as f:
+            pid = int(f.read().strip())
+        if psutil.pid_exists(pid):
+            return "A chatbot is already running. Please wait for it to finish.", 400
+        else:
+            print(f"Stale lock file found with PID: {pid}. Removing it.")
+            os.remove(lock_file)
+
 
     db_session = SessionLocal()
     giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id).first()
-    db_session.close()
-
     if not giveaway:
+        db_session.close()
         return "Giveaway not found.", 404
 
+    # Get the creator's username to use as the channel name
+    creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
+    if not creator:
+        db_session.close()
+        return "Creator information is incomplete.", 400
+    
+    # Use the creator's username as the channel name
+    channel_name = creator.username.lower()
+    db_session.close()
+
     try:
-        # Start a new thread for this chatbot
-        thread = threading.Thread(
-            target=chatbot.start_chatbot,
-            args=(giveaway_id,)
-        )
-        thread.daemon = True  # This makes the thread exit when the main program exits
-        thread.start()
-        
-        # Store the thread
-        chatbot_threads[giveaway_id] = thread
-        
+        # Pass the giveaway ID and channel name to the chatbot
+        process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id), channel_name])
+        chatbot_processes[giveaway_id] = process
+        with open(lock_file, "w") as f:
+            f.write(str(process.pid))
         return redirect("/dashboard")
     except Exception as e:
         return f"Failed to start chatbot: {str(e)}", 500
@@ -383,20 +395,21 @@ def remove_item(item_id):
 
 @app.route("/giveaway/stop/<int:giveaway_id>")
 def stop_giveaway(giveaway_id):
-    result = chatbot.stop_chatbot(giveaway_id)
-    
-    # Mark giveaway as inactive in the database
-    db_session = SessionLocal()
-    giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id).first()
-    if giveaway:
-        giveaway.active = False
-        db_session.commit()
-    db_session.close()
-    
-    if result:
-        return redirect("/dashboard")
+    lock_file = "chatbot.lock"
+
+    if giveaway_id in chatbot_processes:
+        process = chatbot_processes.pop(giveaway_id)
+        process.terminate()
+        process.wait()
+        print(f"Terminated chatbot process for giveaway {giveaway_id}")
+
+    if os.path.exists(lock_file):
+        os.remove(lock_file)
+        print("Lock file removed successfully.")
     else:
-        return "No running chatbot found for this giveaway.", 404
+        print("No lock file found.")
+
+    return "No running chatbot found for this giveaway.", 404
 
 
 @app.route("/winnings")
@@ -420,9 +433,41 @@ def winnings():
 
     return render_template("winnings.html", winnings=winnings)
 
+@app.route("/settings", methods=["GET", "POST"])
+def settings():
+    user_id = session.get("user_id")
+    if not user_id:
+        return redirect("/auth/twitch")
+    
+    db_session = SessionLocal()
+    user = db_session.query(User).filter_by(id=user_id).first()
+    
+    if not user:
+        db_session.close()
+        return redirect("/auth/twitch")
+    
+    error_message = None
+    success_message = None
+    
+    if request.method == "POST":
+        channel_name = request.form.get("channel_name", "").strip()
+        
+        if not channel_name:
+            error_message = "Channel name cannot be empty."
+        elif not re.match(r"^[a-zA-Z0-9_]+$", channel_name):
+            error_message = "Channel name can only contain letters, numbers, and underscores."
+        else:
+            user.channel_name = channel_name
+            db_session.commit()
+            success_message = "Your channel name has been updated."
+    
+    channel_name = user.channel_name or user.username  # Default to username if no channel name set
+    db_session.close()
+    
+    return render_template("settings.html", 
+                          channel_name=channel_name, 
+                          error_message=error_message,
+                          success_message=success_message)
+
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    if os.getenv("ENVIRONMENT") == "development":
-        app.run(host="0.0.0.0", port=port, debug=True)
-    else:
-        serve(app, host="0.0.0.0", port=port)
+    app.run(debug=True)

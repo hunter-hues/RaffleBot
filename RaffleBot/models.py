@@ -3,23 +3,18 @@ from sqlalchemy.orm import relationship
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, validates
 import re
-import os  
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///giveaway.db")
-
-# PostgreSQL requires this modification for Railway
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    
-engine = create_engine(DATABASE_URL, echo=True)  # `echo=True` helps with debugging  
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+DATABASE_URL = "sqlite:///giveaway.db"
 Base = declarative_base()
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
 
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     twitch_id = Column(String, unique=True, index=True, nullable=False)  
     username = Column(String, unique=True, index=True, nullable=False) 
+    channel_name = Column(String, index=True, nullable=True)
 
     giveaways = relationship("Giveaway", back_populates="creator")
     winnings = relationship("Winner", back_populates="user")

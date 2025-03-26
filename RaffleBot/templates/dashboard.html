@@ -8,35 +8,44 @@
         body {
             font-family: Arial, sans-serif;
             margin: 20px;
-            background: url('background-image.png') no-repeat center center fixed;
+            background: url('/static/background-image.png') no-repeat center center fixed;
             background-size: cover;
             color: #fff;
         }
         h1, h2 {
             color: #dcdcdc;
             text-align: center;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            margin-bottom: 25px;
         }
         ul {
             list-style: none;
             padding: 0;
+            max-width: 800px;
+            margin: 0 auto;
         }
         li {
-            margin-bottom: 15px;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 10px;
+            margin-bottom: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
             border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.4);
         }
         button {
             display: inline-block;
             width: calc(100% - 20px);
-            margin: 5px auto;
-            padding: 10px;
+            margin: 8px auto;
+            padding: 12px;
             background: #6a0dad;
             color: #fff;
             border: none;
             border-radius: 20px;
             cursor: pointer;
             font-size: 16px;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            transition: background 0.2s;
         }
         button:hover {
             background: #8b00ff;
@@ -44,6 +53,11 @@
         a {
             text-decoration: none;
             color: #fff;
+        }
+        strong {
+            font-size: 18px;
+            color: #f0f0f0;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
         }
     </style>
 </head>

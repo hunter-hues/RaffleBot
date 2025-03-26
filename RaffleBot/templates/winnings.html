@@ -15,34 +15,48 @@
         h1 {
             text-align: center;
             color: #dcdcdc;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            margin-bottom: 30px;
         }
         ul {
             list-style: none;
             padding: 0;
+            max-width: 700px;
+            margin: 0 auto 30px;
         }
         li {
             margin-bottom: 15px;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 18px;
             border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            font-size: 17px;
         }
         .back-button {
             display: block;
             width: calc(100% - 20px);
-            max-width: 200px;
-            margin: 20px auto;
-            padding: 10px;
+            max-width: 250px;
+            margin: 30px auto;
+            padding: 15px;
             text-align: center;
             background: #6a0dad;
             color: #fff;
             text-decoration: none;
-            border-radius: 20px;
+            border-radius: 25px;
             font-size: 16px;
+            font-weight: bold;
             cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+            transition: background 0.2s, transform 0.1s;
         }
         .back-button:hover {
             background: #8b00ff;
             color: #fff;
+            transform: translateY(-2px);
+        }
+        .back-button:active {
+            transform: translateY(1px);
         }
     </style>
 </head>

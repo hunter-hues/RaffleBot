@@ -5,25 +5,16 @@ import asyncio
 import sys
 import os
 import threading
-import time
 
-# Use environment variables with fallbacks
-BOT_NICK = os.getenv("BOT_NICK", "rafflebot_giveaways")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "4gpbhy6ub5fbrn69jsujrma5nkuhqw")  # Should be in environment variables
-BOT_PREFIX = os.getenv("BOT_PREFIX", "!")
-CHANNEL = os.getenv("CHANNEL", "rafflebot_giveaways")
+BOT_NICK = "rafflebot_giveaways"
+BOT_TOKEN = "4gpbhy6ub5fbrn69jsujrma5nkuhqw"
+BOT_PREFIX = "!"
+CHANNEL = "rafflebot_giveaways"
 
-# Dict to track active chatbots by giveaway_id
-active_chatbots = {}
-
-# Active giveaway state (can be accessed from different routes/threads)
 active_giveaway = None
 entries = []
-giveaway_task = None
+giveaway_task = None 
 lock = threading.Lock()
-
-# Track bot instances
-bot_instances = {}
 
 def is_giveaway_owner(ctx, giveaway):
     db_session = SessionLocal()
@@ -33,12 +24,14 @@ def is_giveaway_owner(ctx, giveaway):
 
 class Bot(commands.Bot):
 
-    def __init__(self, giveaway_id=None):
-        super().__init__(token=BOT_TOKEN, prefix=BOT_PREFIX, initial_channels=[CHANNEL])
+    def __init__(self, giveaway_id=None, channel_name=None):
+        initial_channel = channel_name or CHANNEL
+        super().__init__(token=BOT_TOKEN, prefix=BOT_PREFIX, initial_channels=[initial_channel])
         self.giveaway_id = giveaway_id
         self._connected_channels = []
-        self._nick = BOT_NICK
-        self.stopping = False 
+        self._nick = BOT_NICK 
+        self.empty_rounds = 0
+        self.channel_name = channel_name
 
     @property
     def connected_channels(self):
@@ -61,7 +54,7 @@ class Bot(commands.Bot):
 
         print(f"Bot is online as {self.nick}!")
 
-        self.connected_channels = list(self.connected_channels) or [CHANNEL] 
+        self.connected_channels = list(self.connected_channels) or [self.channel_name or CHANNEL] 
 
         print(f"Connected channels: {self.connected_channels}")
 
@@ -72,18 +65,13 @@ class Bot(commands.Bot):
             print(f"Auto-starting giveaway ID: {self.giveaway_id}")
             db_session = SessionLocal()
             giveaway = db_session.query(Giveaway).filter_by(id=self.giveaway_id).first()
-            
-            # Update giveaway status in database
-            if giveaway:
-                giveaway.active = True
-                db_session.commit()
-                
             db_session.close()
 
             if giveaway:
                 active_giveaway = giveaway
                 entries = []
-                print(f"Giveaway '{giveaway.title}' is now active!")
+                self.empty_rounds = 0  # Reset empty rounds counter when auto-starting
+                print(f"Giveaway '{giveaway.title}' is now active with threshold: {giveaway.threshold}")
                 asyncio.create_task(self.manage_giveaways(None, giveaway))
             else:
                 print(f"No giveaway found with ID {self.giveaway_id}")
@@ -113,12 +101,6 @@ class Bot(commands.Bot):
 
         db_session = SessionLocal()
         giveaway = db_session.query(Giveaway).filter_by(id=int(identifier)).first()
-        
-        # Update giveaway status in database
-        if giveaway:
-            giveaway.active = True
-            db_session.commit()
-            
         db_session.close()
 
         if not giveaway:
@@ -127,7 +109,8 @@ class Bot(commands.Bot):
 
         active_giveaway = giveaway
         entries = []
-        print(f"Starting giveaway: {giveaway.title}")
+        self.empty_rounds = 0  # Reset empty rounds counter when starting a new giveaway
+        print(f"Starting giveaway: {giveaway.title} with threshold: {giveaway.threshold}")
         await ctx.send(f"A giveaway has started: {giveaway.title}! Type !enter to participate.")
         giveaway_task = asyncio.create_task(self.manage_giveaways(ctx, giveaway))
 
@@ -165,14 +148,6 @@ class Bot(commands.Bot):
             except asyncio.CancelledError:
                 print("Giveaway task cleanup completed.")
 
-        # Update giveaway status in database
-        db_session = SessionLocal()
-        giveaway = db_session.query(Giveaway).filter_by(id=active_giveaway.id).first()
-        if giveaway:
-            giveaway.active = False
-            db_session.commit()
-        db_session.close()
-
         with lock:
             if entries:
                 winner = random.choice(entries)
@@ -182,10 +157,10 @@ class Bot(commands.Bot):
 
         active_giveaway = None
         entries = []
+        self.empty_rounds = 0  # Reset empty rounds counter when ending a giveaway manually
 
         await ctx.send("Shutting down the giveaway bot. Thank you for participating!")
         print("Initiating bot shutdown...")
-        self.stopping = True
         await self.shutdown()
 
     @commands.command(name="listgiveaways")
@@ -213,6 +188,8 @@ class Bot(commands.Bot):
 
         try:
             print(f"Managing giveaway: {giveaway.title}")
+            print(f"Giveaway details - ID: {giveaway.id}, Frequency: {giveaway.frequency}, Threshold: {giveaway.threshold}")
+            
             db_session = SessionLocal()
             items = db_session.query(Item).filter_by(giveaway_id=giveaway.id, is_won=False).all()
             print(f"Fetched items: {items}")
@@ -230,29 +207,9 @@ class Bot(commands.Bot):
                             print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                     except Exception as e:
                         print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                        
-                # Update giveaway status in database
-                giveaway = db_session.query(Giveaway).filter_by(id=giveaway.id).first()
-                if giveaway:
-                    giveaway.active = False
-                    db_session.commit()
-                
-                db_session.close()
                 return
 
             for item in items:
-                # Check if we should stop during item processing
-                if self.stopping:
-                    break
-                    
-                # Check if giveaway is still active in database
-                giveaway_status = db_session.query(Giveaway).filter_by(id=giveaway.id).first()
-                
-                if not giveaway_status or not giveaway_status.active:
-                    print(f"Giveaway {giveaway.id} is no longer active. Stopping processing.")
-                    db_session.close()
-                    return
-                
                 print(f"Processing item: {item.name} (ID: {item.id})")
 
                 try:
@@ -298,12 +255,33 @@ class Bot(commands.Bot):
                             entries.remove(winner_name)
                         else:
                             print(f"No entries found for item: {item.name}")
+                            self.empty_rounds += 1  # Increment empty rounds counter
+                            print(f"Empty rounds: {self.empty_rounds}/{giveaway.threshold}")
+                            
+                            if self.empty_rounds >= giveaway.threshold:
+                                print(f"THRESHOLD REACHED: {self.empty_rounds} empty rounds >= threshold of {giveaway.threshold}")
+                                if self.connected_channels:
+                                    try:
+                                        channel = self.get_channel(self.connected_channels[0])
+                                        if channel:
+                                            await channel.send(
+                                                f"No entries for {self.empty_rounds} consecutive rounds. Giveaway '{giveaway.title}' has been automatically ended."
+                                            )
+                                        else:
+                                            print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
+                                    except Exception as e:
+                                        print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
+                                print(f"Ending giveaway '{giveaway.title}' due to {self.empty_rounds} empty rounds")
+                                break  # Exit the loop to end the giveaway
+                            else:
+                                print(f"Threshold not yet reached: {self.empty_rounds} empty rounds < threshold of {giveaway.threshold}")
+                            
                             if self.connected_channels:
                                 try:
                                     channel = self.get_channel(self.connected_channels[0])
                                     if channel:
                                         await channel.send(
-                                            f"No entries for {item.name}. It will be re-given in the next round."
+                                            f"No entries for {item.name}. It will be re-given in the next round. ({self.empty_rounds}/{giveaway.threshold} empty rounds)"
                                         )
                                     else:
                                         print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
@@ -324,13 +302,6 @@ class Bot(commands.Bot):
                         print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                 except Exception as e:
                     print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                    
-            # Update giveaway status in database
-            giveaway = db_session.query(Giveaway).filter_by(id=giveaway.id).first()
-            if giveaway:
-                giveaway.active = False
-                db_session.commit()
-                
             active_giveaway = None
 
         except Exception as e:
@@ -338,6 +309,7 @@ class Bot(commands.Bot):
         finally:
             db_session.close()
             await self.shutdown()
+
 
     async def shutdown(self):
         """Shutdown the bot gracefully."""
@@ -350,51 +322,18 @@ class Bot(commands.Bot):
         except Exception as e:
             print(f"Error during bot shutdown: {e}")
         finally:
-            # Remove this bot instance from tracking
-            if self.giveaway_id and self.giveaway_id in bot_instances:
-                del bot_instances[self.giveaway_id]
-            
-            if hasattr(self, 'giveaway_id') and self.giveaway_id in active_chatbots:
-                active_chatbots[self.giveaway_id]['active'] = False
+            print("Exiting system process.")
+            os._exit(0) 
 
 
-# Function to run the bot in a thread
-async def run_bot(giveaway_id):
-    bot = Bot(giveaway_id=giveaway_id)
-    bot_instances[giveaway_id] = bot
-    await bot.start()
-
-# Function to start a giveaway (called from app.py)
-def start_chatbot(giveaway_id):
-    if giveaway_id in active_chatbots and active_chatbots[giveaway_id]['active']:
-        print(f"Chatbot for giveaway {giveaway_id} is already running")
-        return False
-    
-    # Mark this giveaway as having an active chatbot
-    active_chatbots[giveaway_id] = {'active': True, 'start_time': time.time()}
-    
-    # Create a new event loop for this thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    # Run the bot in this event loop
-    loop.run_until_complete(run_bot(giveaway_id))
-    return True
-
-# Function to stop a giveaway (called from app.py)
-def stop_chatbot(giveaway_id):
-    if giveaway_id in bot_instances:
-        bot = bot_instances[giveaway_id]
-        bot.stopping = True
-        return True
-    return False
-
-# For standalone testing
 if __name__ == "__main__":
     giveaway_id = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    if giveaway_id:
-        # This runs when executed directly as a script
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(run_bot(giveaway_id))
+    channel_name = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    if channel_name:
+        print(f"Starting bot in channel: {channel_name}")
     else:
-        print("No giveaway ID provided")
+        print(f"No channel specified, using default channel: {CHANNEL}")
+    
+    bot = Bot(giveaway_id=giveaway_id, channel_name=channel_name)
+    bot.run()

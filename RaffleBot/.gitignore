@@ -1,10 +1,17 @@
-# Environment variables
+# Sensitive Information
+DELETETHISBEFOREUPLOAD
+*.env
 .env
+config.ini
+secrets.json
 
-# Sensitive information
-DELETETHISBEFOREUPLOAD.TXT
+# Database
+*.db
+*.sqlite
+*.sqlite3
+giveaway.db
 
-# Python specific
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,19 +29,34 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 
-# Database
-*.db
-*.sqlite3
+# Virtual Environment
+venv/
+ENV/
+env/
+.env/
+.venv/
 
-# OS specific
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+
+# Application specific
+*.lock
+chatbot_*.lock
+*.log
+logs/
+temp/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
