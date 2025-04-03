@@ -9,32 +9,131 @@ from sqlalchemy.orm import joinedload
 import psutil
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from flask_session import Session
+import logging
+from logging.handlers import RotatingFileHandler
 import re
 
+# Load environment variables
 load_dotenv()
+
+# Configure logging
+def setup_logging():
+    log_level = os.getenv('LOG_LEVEL', 'INFO')
+    log_file = os.getenv('LOG_FILE', 'app.log')
+    
+    # Create a formatter that strips ANSI color codes
+    class NoColorFormatter(logging.Formatter):
+        def format(self, record):
+            # Remove ANSI color codes
+            message = super().format(record)
+            message = re.sub(r'\x1b\[[0-9;]*m', '', message)
+            return message
+    
+    # Create handlers
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10000000,
+        backupCount=5,
+        encoding='utf-8'
+    )
+    console_handler = logging.StreamHandler()
+    
+    # Set formatters
+    formatter = NoColorFormatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, log_level))
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # Configure werkzeug logger
+    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger.setLevel(logging.INFO)
+    werkzeug_logger.addHandler(file_handler)
+    werkzeug_logger.addHandler(console_handler)
+    
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
+
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
-limiter = Limiter(
-    get_remote_address,
-    app=app,
-    storage_uri="memory://"
+
+# Security configurations
+app.config.update(
+    SECRET_KEY=os.getenv('FLASK_SECRET_KEY', os.urandom(24)),
+    SESSION_COOKIE_SECURE=os.getenv('SESSION_COOKIE_SECURE', 'True').lower() == 'true',
+    SESSION_COOKIE_HTTPONLY=os.getenv('SESSION_COOKIE_HTTPONLY', 'True').lower() == 'true',
+    SESSION_COOKIE_SAMESITE=os.getenv('SESSION_COOKIE_SAMESITE', 'Lax'),
+    PERMANENT_SESSION_LIFETIME=3600,  # 1 hour
+    SESSION_TYPE='filesystem'
 )
 
+# Initialize session
+Session(app)
+
+# Configure rate limiting
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    storage_uri="memory://",
+    default_limits=[os.getenv('RATE_LIMIT_DEFAULT', '10/minute')],
+    strategy="fixed-window"
+)
+
+# Add specific rate limits for auth routes
+@limiter.limit(os.getenv('RATE_LIMIT_AUTH', '5/minute'))
+@app.route("/auth/twitch")
+def auth_twitch():
+    return redirect(
+        f"https://id.twitch.tv/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=user:read:email"
+    )
+
+# Security headers middleware
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    return response
+
+# Error handlers
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    logger.warning(f"Rate limit exceeded for {request.remote_addr}")
+    return "Rate limit exceeded", 429
+
+@app.errorhandler(500)
+def internal_error(e):
+    logger.error(f"Internal server error: {str(e)}")
+    return "Internal server error", 500
+
+@app.errorhandler(404)
+def not_found_error(e):
+    logger.warning(f"Page not found: {request.url}")
+    return "Page not found", 404
+
+# Environment variables
 CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
-REDIRECT_URI = "http://localhost:5000/auth/twitch/callback"
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:5000/auth/twitch/callback")
+
+if not all([CLIENT_ID, CLIENT_SECRET]):
+    logger.error("Missing required environment variables: TWITCH_CLIENT_ID or TWITCH_CLIENT_SECRET")
+    raise ValueError("Missing required environment variables")
 
 chatbot_processes = {}
 
 @app.route("/")
 def home():
     return render_template("home.html")
-
-@app.route("/auth/twitch")
-def auth_twitch():
-    return redirect(
-        f"https://id.twitch.tv/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=user:read:email"
-    )
 
 @app.route("/auth/twitch/callback")
 def auth_twitch_callback():

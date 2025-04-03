@@ -1,15 +1,7 @@
-# Sensitive Information
-DELETETHISBEFOREUPLOAD
-*.env
+# Environment variables
 .env
-config.ini
-secrets.json
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-giveaway.db
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -49,14 +41,21 @@ env/
 .DS_Store
 
 # Application specific
-*.lock
-chatbot_*.lock
 *.log
 logs/
-temp/
+*.lock
+chatbot_*.lock
+giveaway.db
+*.db
+*.sqlite
+*.sqlite3
 
 # Testing
 .coverage
 htmlcov/
 .pytest_cache/
 .tox/
+
+# Flask Session
+flask_session/
+*.session

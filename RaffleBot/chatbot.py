@@ -5,11 +5,24 @@ import asyncio
 import sys
 import os
 import threading
+import logging
+from dotenv import load_dotenv
 
-BOT_NICK = "rafflebot_giveaways"
-BOT_TOKEN = "4gpbhy6ub5fbrn69jsujrma5nkuhqw"
-BOT_PREFIX = "!"
-CHANNEL = "rafflebot_giveaways"
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Environment variables
+BOT_NICK = os.getenv("BOT_NICK", "rafflebot_giveaways")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_PREFIX = os.getenv("BOT_PREFIX", "!")
+CHANNEL = os.getenv("DEFAULT_CHANNEL", "rafflebot_giveaways")
+
+if not BOT_TOKEN:
+    logger.error("Missing required environment variable: BOT_TOKEN")
+    raise ValueError("Missing required environment variable: BOT_TOKEN")
 
 active_giveaway = None
 entries = []
@@ -32,6 +45,7 @@ class Bot(commands.Bot):
         self._nick = BOT_NICK 
         self.empty_rounds = 0
         self.channel_name = channel_name
+        self.logger = logging.getLogger(f"Bot-{channel_name or 'default'}")
 
     @property
     def connected_channels(self):
@@ -52,35 +66,38 @@ class Bot(commands.Bot):
     async def event_ready(self):
         global active_giveaway, entries
 
-        print(f"Bot is online as {self.nick}!")
+        self.logger.info(f"Bot is online as {self.nick}!")
 
         self.connected_channels = list(self.connected_channels) or [self.channel_name or CHANNEL] 
 
-        print(f"Connected channels: {self.connected_channels}")
+        self.logger.info(f"Connected channels: {self.connected_channels}")
 
         if not self.connected_channels:
-            print("Warning: Bot is not connected to any channels.")
+            self.logger.warning("Bot is not connected to any channels.")
         
         if self.giveaway_id:
-            print(f"Auto-starting giveaway ID: {self.giveaway_id}")
+            self.logger.info(f"Auto-starting giveaway ID: {self.giveaway_id}")
             db_session = SessionLocal()
-            giveaway = db_session.query(Giveaway).filter_by(id=self.giveaway_id).first()
-            db_session.close()
-
-            if giveaway:
-                active_giveaway = giveaway
-                entries = []
-                self.empty_rounds = 0  # Reset empty rounds counter when auto-starting
-                print(f"Giveaway '{giveaway.title}' is now active with threshold: {giveaway.threshold}")
-                asyncio.create_task(self.manage_giveaways(None, giveaway))
-            else:
-                print(f"No giveaway found with ID {self.giveaway_id}")
+            try:
+                giveaway = db_session.query(Giveaway).filter_by(id=self.giveaway_id).first()
+                if giveaway:
+                    self.active_giveaway = giveaway
+                    self.entries = []
+                    self.empty_rounds = 0  # Reset empty rounds counter when auto-starting
+                    self.logger.info(f"Giveaway '{giveaway.title}' is now active with threshold: {giveaway.threshold}")
+                    asyncio.create_task(self.manage_giveaways(None, giveaway))
+                else:
+                    self.logger.error(f"No giveaway found with ID {self.giveaway_id}")
+            except Exception as e:
+                self.logger.error(f"Error starting giveaway: {str(e)}")
+            finally:
+                db_session.close()
 
     async def event_message(self, message):
         if message.author is None:
             return
 
-        print(f"{message.author.name}: {message.content}")
+        self.logger.debug(f"{message.author.name}: {message.content}")
 
         if message.author.name.lower() == self.nick.lower():
             return
@@ -187,15 +204,15 @@ class Bot(commands.Bot):
         global active_giveaway, entries
 
         try:
-            print(f"Managing giveaway: {giveaway.title}")
-            print(f"Giveaway details - ID: {giveaway.id}, Frequency: {giveaway.frequency}, Threshold: {giveaway.threshold}")
+            self.logger.info(f"Managing giveaway: {giveaway.title}")
+            self.logger.info(f"Giveaway details - ID: {giveaway.id}, Frequency: {giveaway.frequency}, Threshold: {giveaway.threshold}")
             
             db_session = SessionLocal()
             items = db_session.query(Item).filter_by(giveaway_id=giveaway.id, is_won=False).all()
-            print(f"Fetched items: {items}")
+            self.logger.info(f"Fetched items: {items}")
 
             if not items:
-                print(f"No items found for giveaway '{giveaway.title}'. Ending giveaway.")
+                self.logger.info(f"No items found for giveaway '{giveaway.title}'. Ending giveaway.")
                 if self.connected_channels:
                     try:
                         channel = self.get_channel(self.connected_channels[0])
@@ -204,13 +221,13 @@ class Bot(commands.Bot):
                                 f"No items are available for giveaway '{giveaway.title}'. The giveaway cannot proceed."
                             )
                         else:
-                            print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
+                            self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                     except Exception as e:
-                        print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
+                        self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
                 return
 
             for item in items:
-                print(f"Processing item: {item.name} (ID: {item.id})")
+                self.logger.debug(f"Processing item: {item.name} (ID: {item.id})")
 
                 try:
                     message = f"Giving away: {item.name}!"
@@ -220,18 +237,18 @@ class Bot(commands.Bot):
                             if channel:
                                 await channel.send(message)
                             else:
-                                print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
+                                self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                         except Exception as e:
-                            print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
+                            self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
                     else:
-                        print(f"Connected channels not found. Skipping message: {message}")
+                        self.logger.warning(f"Connected channels not found. Skipping message: {message}")
 
                     await asyncio.sleep(giveaway.frequency)
 
                     with lock:
                         if entries:
                             winner_name = random.choice(entries)
-                            print(f"Selected winner: {winner_name}")
+                            self.logger.info(f"Selected winner: {winner_name}")
 
                             winner = db_session.query(User).filter_by(username=winner_name).first()
 
@@ -249,17 +266,17 @@ class Bot(commands.Bot):
                                             f"Congratulations {winner_name}! You've won {item.name}!"
                                         )
                                     else:
-                                        print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
+                                        self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                                 except Exception as e:
-                                    print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
+                                    self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
                             entries.remove(winner_name)
                         else:
-                            print(f"No entries found for item: {item.name}")
+                            self.logger.info(f"No entries found for item: {item.name}")
                             self.empty_rounds += 1  # Increment empty rounds counter
-                            print(f"Empty rounds: {self.empty_rounds}/{giveaway.threshold}")
+                            self.logger.info(f"Empty rounds: {self.empty_rounds}/{giveaway.threshold}")
                             
                             if self.empty_rounds >= giveaway.threshold:
-                                print(f"THRESHOLD REACHED: {self.empty_rounds} empty rounds >= threshold of {giveaway.threshold}")
+                                self.logger.info(f"THRESHOLD REACHED: {self.empty_rounds} empty rounds >= threshold of {giveaway.threshold}")
                                 if self.connected_channels:
                                     try:
                                         channel = self.get_channel(self.connected_channels[0])
@@ -268,13 +285,13 @@ class Bot(commands.Bot):
                                                 f"No entries for {self.empty_rounds} consecutive rounds. Giveaway '{giveaway.title}' has been automatically ended."
                                             )
                                         else:
-                                            print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
+                                            self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                                     except Exception as e:
-                                        print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                                print(f"Ending giveaway '{giveaway.title}' due to {self.empty_rounds} empty rounds")
+                                        self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
+                                self.logger.info(f"Ending giveaway '{giveaway.title}' due to {self.empty_rounds} empty rounds")
                                 break  # Exit the loop to end the giveaway
                             else:
-                                print(f"Threshold not yet reached: {self.empty_rounds} empty rounds < threshold of {giveaway.threshold}")
+                                self.logger.info(f"Threshold not yet reached: {self.empty_rounds} empty rounds < threshold of {giveaway.threshold}")
                             
                             if self.connected_channels:
                                 try:
@@ -284,13 +301,13 @@ class Bot(commands.Bot):
                                             f"No entries for {item.name}. It will be re-given in the next round. ({self.empty_rounds}/{giveaway.threshold} empty rounds)"
                                         )
                                     else:
-                                        print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
+                                        self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                                 except Exception as e:
-                                    print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
+                                    self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
                 except Exception as e:
-                    print(f"Error processing item '{item.name}': {e}")
+                    self.logger.error(f"Error processing item '{item.name}': {e}")
 
-            print(f"Giveaway '{giveaway.title}' concluded.")
+            self.logger.info(f"Giveaway '{giveaway.title}' concluded.")
             if self.connected_channels:
                 try:
                     channel = self.get_channel(self.connected_channels[0])
@@ -299,13 +316,13 @@ class Bot(commands.Bot):
                             f"The giveaway '{giveaway.title}' has ended. Thank you for participating!"
                         )
                     else:
-                        print(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
+                        self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                 except Exception as e:
-                    print(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
+                    self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
             active_giveaway = None
 
         except Exception as e:
-            print(f"Error in managing giveaway: {e}")
+            self.logger.error(f"Error in managing giveaway: {e}")
         finally:
             db_session.close()
             await self.shutdown()
@@ -313,16 +330,16 @@ class Bot(commands.Bot):
 
     async def shutdown(self):
         """Shutdown the bot gracefully."""
-        print("Shutting down chatbot...")
+        self.logger.info("Shutting down chatbot...")
         try:
             await self.close()
-            print("Bot connection closed.")
+            self.logger.info("Bot connection closed.")
         except asyncio.CancelledError:
-            print("Suppressed asyncio.CancelledError during shutdown.")
+            self.logger.info("Suppressed asyncio.CancelledError during shutdown.")
         except Exception as e:
-            print(f"Error during bot shutdown: {e}")
+            self.logger.error(f"Error during bot shutdown: {e}")
         finally:
-            print("Exiting system process.")
+            self.logger.info("Exiting system process.")
             os._exit(0) 
 
 
