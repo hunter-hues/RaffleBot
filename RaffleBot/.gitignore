@@ -45,10 +45,22 @@ env/
 logs/
 *.lock
 chatbot_*.lock
-giveaway.db
 *.db
 *.sqlite
 *.sqlite3
+flask_session/
+*.session
+instance/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+giveaway.db
 
 # Testing
 .coverage
@@ -59,3 +71,10 @@ htmlcov/
 # Flask Session
 flask_session/
 *.session
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~

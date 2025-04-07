@@ -64,8 +64,6 @@ class Bot(commands.Bot):
         self._nick = value
 
     async def event_ready(self):
-        global active_giveaway, entries
-
         self.logger.info(f"Bot is online as {self.nick}!")
 
         self.connected_channels = list(self.connected_channels) or [self.channel_name or CHANNEL] 
@@ -85,7 +83,7 @@ class Bot(commands.Bot):
                     self.entries = []
                     self.empty_rounds = 0  # Reset empty rounds counter when auto-starting
                     self.logger.info(f"Giveaway '{giveaway.title}' is now active with threshold: {giveaway.threshold}")
-                    asyncio.create_task(self.manage_giveaways(None, giveaway))
+                    self.giveaway_task = asyncio.create_task(self.manage_giveaways(None, giveaway))
                 else:
                     self.logger.error(f"No giveaway found with ID {self.giveaway_id}")
             except Exception as e:
@@ -106,9 +104,7 @@ class Bot(commands.Bot):
 
     @commands.command(name="startgiveaway")
     async def start_giveaway(self, ctx, identifier: str = None):
-        global active_giveaway, entries, giveaway_task
-
-        if active_giveaway:
+        if self.active_giveaway:
             await ctx.send("A giveaway is already active!")
             return
 
@@ -124,56 +120,52 @@ class Bot(commands.Bot):
             await ctx.send("Invalid giveaway ID provided.")
             return
 
-        active_giveaway = giveaway
-        entries = []
+        self.active_giveaway = giveaway
+        self.entries = []
         self.empty_rounds = 0  # Reset empty rounds counter when starting a new giveaway
         print(f"Starting giveaway: {giveaway.title} with threshold: {giveaway.threshold}")
         await ctx.send(f"A giveaway has started: {giveaway.title}! Type !enter to participate.")
-        giveaway_task = asyncio.create_task(self.manage_giveaways(ctx, giveaway))
+        self.giveaway_task = asyncio.create_task(self.manage_giveaways(ctx, giveaway))
 
     @commands.command(name="enter")
     async def enter_giveaway(self, ctx):
-        global entries
-
-        if not active_giveaway:
+        if not self.active_giveaway:
             print("No active giveaway found when entering.")
             await ctx.send("There is no active giveaway to join.")
             return
 
         with lock:
-            if ctx.author.name not in entries:
-                entries.append(ctx.author.name)
-                print(f"{ctx.author.name} entered the giveaway. Current entries: {entries}")
+            if ctx.author.name not in self.entries:
+                self.entries.append(ctx.author.name)
+                print(f"{ctx.author.name} entered the giveaway. Current entries: {self.entries}")
                 await ctx.send(f"{ctx.author.name}, you have been entered into the giveaway!")
             else:
-                print(f"{ctx.author.name} is already in the giveaway. Current entries: {entries}")
+                print(f"{ctx.author.name} is already in the giveaway. Current entries: {self.entries}")
                 await ctx.send(f"{ctx.author.name}, you are already entered!")
 
     @commands.command(name="endgiveaway")
     async def end_giveaway(self, ctx):
-        global active_giveaway, entries, giveaway_task
-
-        if not active_giveaway:
+        if not self.active_giveaway:
             await ctx.send("There is no active giveaway to end.")
             return
 
-        if giveaway_task:
-            giveaway_task.cancel()
+        if self.giveaway_task:
+            self.giveaway_task.cancel()
             print("Giveaway task canceled.")
             try:
-                await giveaway_task
+                await self.giveaway_task
             except asyncio.CancelledError:
                 print("Giveaway task cleanup completed.")
 
         with lock:
-            if entries:
-                winner = random.choice(entries)
-                await ctx.send(f"The giveaway '{active_giveaway.title}' has ended! Congratulations to {winner}!")
+            if self.entries:
+                winner = random.choice(self.entries)
+                await ctx.send(f"The giveaway '{self.active_giveaway.title}' has ended! Congratulations to {winner}!")
             else:
-                await ctx.send(f"The giveaway '{active_giveaway.title}' has ended with no participants.")
+                await ctx.send(f"The giveaway '{self.active_giveaway.title}' has ended with no participants.")
 
-        active_giveaway = None
-        entries = []
+        self.active_giveaway = None
+        self.entries = []
         self.empty_rounds = 0  # Reset empty rounds counter when ending a giveaway manually
 
         await ctx.send("Shutting down the giveaway bot. Thank you for participating!")
@@ -201,8 +193,6 @@ class Bot(commands.Bot):
         await ctx.send(f"Your giveaways: {giveaway_list}")
 
     async def manage_giveaways(self, ctx, giveaway):
-        global active_giveaway, entries
-
         try:
             self.logger.info(f"Managing giveaway: {giveaway.title}")
             self.logger.info(f"Giveaway details - ID: {giveaway.id}, Frequency: {giveaway.frequency}, Threshold: {giveaway.threshold}")
@@ -246,8 +236,8 @@ class Bot(commands.Bot):
                     await asyncio.sleep(giveaway.frequency)
 
                     with lock:
-                        if entries:
-                            winner_name = random.choice(entries)
+                        if self.entries:
+                            winner_name = random.choice(self.entries)
                             self.logger.info(f"Selected winner: {winner_name}")
 
                             winner = db_session.query(User).filter_by(username=winner_name).first()
@@ -269,7 +259,7 @@ class Bot(commands.Bot):
                                         self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                                 except Exception as e:
                                     self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                            entries.remove(winner_name)
+                            self.entries.remove(winner_name)
                         else:
                             self.logger.info(f"No entries found for item: {item.name}")
                             self.empty_rounds += 1  # Increment empty rounds counter
@@ -319,7 +309,7 @@ class Bot(commands.Bot):
                         self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
                 except Exception as e:
                     self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-            active_giveaway = None
+            self.active_giveaway = None
 
         except Exception as e:
             self.logger.error(f"Error in managing giveaway: {e}")
