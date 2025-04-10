@@ -3,7 +3,7 @@ import requests
 import os
 import subprocess
 from dotenv import load_dotenv
-from models import SessionLocal, User, Giveaway, Item, Winner
+from models import SessionLocal, User, Giveaway, Item, Winner, ActiveGiveaway, ProcessTracker
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 import psutil
@@ -13,6 +13,8 @@ from flask_session import Session
 import logging
 from logging.handlers import RotatingFileHandler
 import re
+import threading
+import time
 
 # Load environment variables
 load_dotenv()
@@ -221,16 +223,23 @@ def dashboard():
     if not user_id:
         return redirect("/auth/twitch")
     db_session = SessionLocal()
-    user = db_session.query(User).filter_by(id=user_id).first()
-    if not user:
+    try:
+        user = db_session.query(User).filter_by(id=user_id).first()
+        if not user:
+            return redirect("/auth/twitch")
+        
+        # Use joinedload to load active_instances relationship
+        giveaways = (
+            db_session.query(Giveaway)
+            .filter_by(creator_id=user_id)
+            .options(joinedload(Giveaway.active_instances))
+            .all()
+        )
+        winners = db_session.query(Winner).join(Giveaway).filter(Giveaway.creator_id == user_id).all()
+        
+        return render_template("dashboard.html", giveaways=giveaways, winners=winners)
+    finally:
         db_session.close()
-        return redirect("/auth/twitch")
-    
-    giveaways = db_session.query(Giveaway).filter_by(creator_id=user_id).all()
-    winners = db_session.query(Winner).join(Giveaway).filter(Giveaway.creator_id == user_id).all()
-    db_session.close()
-
-    return render_template("dashboard.html", giveaways=giveaways, winners=winners)
 
 
 @app.route("/giveaway/create", methods=["GET", "POST"])
@@ -331,43 +340,71 @@ def delete_giveaway(id):
 
 @app.route("/giveaway/start/<int:giveaway_id>")
 def start_giveaway(giveaway_id):
-    lock_file = "chatbot.lock"
-
-    if os.path.exists(lock_file):
-        with open(lock_file, "r") as f:
-            pid = int(f.read().strip())
-        if psutil.pid_exists(pid):
-            return "A chatbot is already running. Please wait for it to finish.", 400
-        else:
-            print(f"Stale lock file found with PID: {pid}. Removing it.")
-            os.remove(lock_file)
-
+    user_id = session.get("user_id")
+    if not user_id:
+        return redirect("/auth/twitch")
 
     db_session = SessionLocal()
-    giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id).first()
-    if not giveaway:
-        db_session.close()
-        return "Giveaway not found.", 404
-
-    # Get the creator's username to use as the channel name
-    creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
-    if not creator:
-        db_session.close()
-        return "Creator information is incomplete.", 400
-    
-    # Use the creator's username as the channel name
-    channel_name = creator.username.lower()
-    db_session.close()
-
     try:
-        # Pass the giveaway ID and channel name to the chatbot
+        # Check if giveaway exists and user has permission
+        giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id, creator_id=user_id).first()
+        if not giveaway:
+            return "Giveaway not found or you don't have permission to start it.", 403
+
+        # Clean up any stale process trackers
+        stale_trackers = db_session.query(ProcessTracker).filter_by(
+            giveaway_id=giveaway_id,
+            is_active=True
+        ).all()
+        
+        for tracker in stale_trackers:
+            try:
+                process = psutil.Process(tracker.process_id)
+                if not process.is_running():
+                    tracker.is_active = False
+            except psutil.NoSuchProcess:
+                tracker.is_active = False
+        
+        db_session.commit()
+
+        # Check if giveaway is already running
+        active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
+        if active_giveaway:
+            # Check if process is still running
+            if psutil.pid_exists(active_giveaway.process_id):
+                return "This giveaway is already running.", 400
+            else:
+                # Clean up stale entry
+                db_session.delete(active_giveaway)
+                db_session.commit()
+
+        # Get the creator's username to use as the channel name
+        creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
+        if not creator:
+            return "Creator information is incomplete.", 400
+        
+        channel_name = creator.channel_name or creator.username.lower()
+
+        # Start the chatbot process
         process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id), channel_name])
-        chatbot_processes[giveaway_id] = process
-        with open(lock_file, "w") as f:
-            f.write(str(process.pid))
+        
+        # Record the active giveaway
+        active_giveaway = ActiveGiveaway(
+            giveaway_id=giveaway_id,
+            process_id=process.pid,
+            channel_name=channel_name
+        )
+        db_session.add(active_giveaway)
+        db_session.commit()
+
         return redirect("/dashboard")
+
     except Exception as e:
-        return f"Failed to start chatbot: {str(e)}", 500
+        db_session.rollback()
+        logger.error(f"Error starting giveaway: {str(e)}")
+        return f"Failed to start giveaway: {str(e)}", 500
+    finally:
+        db_session.close()
 
 @app.route("/giveaway/edit/<int:id>", methods=["GET", "POST"])
 def edit_giveaway(id):
@@ -494,21 +531,75 @@ def remove_item(item_id):
 
 @app.route("/giveaway/stop/<int:giveaway_id>")
 def stop_giveaway(giveaway_id):
-    lock_file = "chatbot.lock"
+    user_id = session.get("user_id")
+    if not user_id:
+        return redirect("/auth/twitch")
 
-    if giveaway_id in chatbot_processes:
-        process = chatbot_processes.pop(giveaway_id)
-        process.terminate()
-        process.wait()
-        print(f"Terminated chatbot process for giveaway {giveaway_id}")
+    db_session = SessionLocal()
+    try:
+        # Check if giveaway exists and user has permission
+        giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id, creator_id=user_id).first()
+        if not giveaway:
+            return "Giveaway not found or you don't have permission to stop it.", 403
 
-    if os.path.exists(lock_file):
-        os.remove(lock_file)
-        print("Lock file removed successfully.")
-    else:
-        print("No lock file found.")
+        # Check if giveaway is running
+        active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
+        if not active_giveaway:
+            return "This giveaway is not running.", 400
 
-    return "No running chatbot found for this giveaway.", 404
+        # Try to terminate the process
+        try:
+            process = psutil.Process(active_giveaway.process_id)
+            logger.info(f"Terminating process {active_giveaway.process_id} for giveaway {giveaway_id}")
+            process.terminate()
+            process.wait(timeout=5)  # Wait up to 5 seconds for the process to terminate
+            logger.info(f"Process {active_giveaway.process_id} terminated successfully")
+        except psutil.NoSuchProcess:
+            logger.info(f"Process {active_giveaway.process_id} already terminated")
+        except psutil.TimeoutExpired:
+            logger.warning(f"Process {active_giveaway.process_id} did not terminate in time, forcing kill")
+            process.kill()  # Force kill if it doesn't terminate
+            try:
+                process.wait(timeout=2)  # Wait a bit more for the process to be killed
+            except psutil.TimeoutExpired:
+                logger.error(f"Failed to kill process {active_giveaway.process_id}")
+
+        # Clean up any process trackers for this giveaway
+        trackers = db_session.query(ProcessTracker).filter_by(
+            giveaway_id=giveaway_id,
+            is_active=True
+        ).all()
+        
+        for tracker in trackers:
+            try:
+                # Check if the process is still running
+                process = psutil.Process(tracker.process_id)
+                if process.is_running():
+                    logger.info(f"Terminating tracked process {tracker.process_id}")
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except psutil.TimeoutExpired:
+                        process.kill()
+            except psutil.NoSuchProcess:
+                pass  # Process already terminated
+            
+            # Mark tracker as inactive
+            tracker.is_active = False
+        
+        # Remove the active giveaway record
+        db_session.delete(active_giveaway)
+        db_session.commit()
+        logger.info(f"Giveaway {giveaway_id} stopped successfully")
+
+        return redirect("/dashboard")
+
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"Error stopping giveaway: {str(e)}")
+        return f"Failed to stop giveaway: {str(e)}", 500
+    finally:
+        db_session.close()
 
 
 @app.route("/winnings")
@@ -567,6 +658,53 @@ def settings():
                           channel_name=channel_name, 
                           error_message=error_message,
                           success_message=success_message)
+
+# Function to clean up stale processes
+def cleanup_stale_processes():
+    """Periodically clean up stale processes and process trackers."""
+    while True:
+        try:
+            db_session = SessionLocal()
+            
+            # Clean up stale process trackers
+            stale_trackers = db_session.query(ProcessTracker).filter_by(is_active=True).all()
+            for tracker in stale_trackers:
+                try:
+                    process = psutil.Process(tracker.process_id)
+                    if not process.is_running():
+                        logger.info(f"Marking stale process tracker {tracker.process_id} as inactive")
+                        tracker.is_active = False
+                except psutil.NoSuchProcess:
+                    logger.info(f"Marking non-existent process tracker {tracker.process_id} as inactive")
+                    tracker.is_active = False
+            
+            # Clean up stale active giveaways
+            active_giveaways = db_session.query(ActiveGiveaway).all()
+            for active in active_giveaways:
+                try:
+                    process = psutil.Process(active.process_id)
+                    if not process.is_running():
+                        logger.info(f"Removing stale active giveaway for process {active.process_id}")
+                        db_session.delete(active)
+                except psutil.NoSuchProcess:
+                    logger.info(f"Removing active giveaway for non-existent process {active.process_id}")
+                    db_session.delete(active)
+            
+            db_session.commit()
+            db_session.close()
+        except Exception as e:
+            logger.error(f"Error in cleanup_stale_processes: {e}")
+            try:
+                db_session.close()
+            except:
+                pass
+        
+        # Sleep for 5 minutes before next cleanup
+        time.sleep(300)
+
+# Start the cleanup thread
+cleanup_thread = threading.Thread(target=cleanup_stale_processes, daemon=True)
+cleanup_thread.start()
 
 if __name__ == "__main__":
     app.run(debug=True)

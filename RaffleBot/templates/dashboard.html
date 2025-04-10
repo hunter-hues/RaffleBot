@@ -70,12 +70,19 @@
         <li>
             <strong>{{ giveaway.title }}</strong> (ID: {{ giveaway.id }})<br>
             Frequency: {{ giveaway.frequency }} seconds<br>
+            Status: {% if giveaway.active_instances %}Running{% else %}Stopped{% endif %}<br>
             <button>
                 <a href="/giveaway/edit/{{ giveaway.id }}">Edit Giveaway</a>
             </button>
+            {% if not giveaway.active_instances %}
             <button>
                 <a href="/giveaway/start/{{ giveaway.id }}">Start Giveaway</a>
             </button>
+            {% else %}
+            <button>
+                <a href="/giveaway/stop/{{ giveaway.id }}">Stop Giveaway</a>
+            </button>
+            {% endif %}
             <button>
                 <a href="/giveaway/delete/{{ giveaway.id }}">Delete Giveaway</a>
             </button>

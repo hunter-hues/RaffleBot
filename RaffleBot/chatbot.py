@@ -1,5 +1,5 @@
 from twitchio.ext import commands
-from models import SessionLocal, Giveaway, User, Item
+from models import SessionLocal, Giveaway, User, Item, ActiveGiveaway, ProcessTracker
 import random
 import asyncio
 import sys
@@ -7,6 +7,8 @@ import os
 import threading
 import logging
 from dotenv import load_dotenv
+import psutil
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -46,6 +48,11 @@ class Bot(commands.Bot):
         self.empty_rounds = 0
         self.channel_name = channel_name
         self.logger = logging.getLogger(f"Bot-{channel_name or 'default'}")
+        self.active_giveaway = None
+        self.entries = []
+        self.giveaway_task = None
+        self.heartbeat_task = None
+        self.process_id = os.getpid()
 
     @property
     def connected_channels(self):
@@ -63,11 +70,31 @@ class Bot(commands.Bot):
     def nick(self, value):
         self._nick = value
 
+    async def update_heartbeat(self):
+        """Update the process heartbeat in the database."""
+        while True:
+            try:
+                db_session = SessionLocal()
+                tracker = db_session.query(ProcessTracker).filter_by(
+                    process_id=self.process_id,
+                    giveaway_id=self.giveaway_id
+                ).first()
+                
+                if tracker:
+                    tracker.last_heartbeat = datetime.utcnow()
+                    db_session.commit()
+                db_session.close()
+            except Exception as e:
+                self.logger.error(f"Error updating heartbeat: {e}")
+            await asyncio.sleep(30)  # Update every 30 seconds
+
     async def event_ready(self):
-        self.logger.info(f"Bot is online as {self.nick}!")
+        """Called once when the bot goes online."""
+        self.logger.info(f"Bot is ready! Connected to channel: {self.channel_name}")
+        if self.giveaway_id:
+            self.logger.info(f"Managing giveaway ID: {self.giveaway_id}")
 
         self.connected_channels = list(self.connected_channels) or [self.channel_name or CHANNEL] 
-
         self.logger.info(f"Connected channels: {self.connected_channels}")
 
         if not self.connected_channels:
@@ -77,17 +104,86 @@ class Bot(commands.Bot):
             self.logger.info(f"Auto-starting giveaway ID: {self.giveaway_id}")
             db_session = SessionLocal()
             try:
+                # Clean up any stale process trackers
+                stale_trackers = db_session.query(ProcessTracker).filter_by(
+                    giveaway_id=self.giveaway_id,
+                    is_active=True
+                ).all()
+                
+                for tracker in stale_trackers:
+                    try:
+                        process = psutil.Process(tracker.process_id)
+                        if not process.is_running():
+                            tracker.is_active = False
+                            self.logger.info(f"Marked stale tracker {tracker.process_id} as inactive")
+                    except psutil.NoSuchProcess:
+                        tracker.is_active = False
+                        self.logger.info(f"Marked non-existent tracker {tracker.process_id} as inactive")
+                
+                db_session.commit()
+
+                # Check if there's already an active giveaway with a running process
+                active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
+                if active:
+                    try:
+                        # Check if the process is still running
+                        process = psutil.Process(active.process_id)
+                        if process.is_running():
+                            # Check if the process is actually our bot
+                            if active.process_id != self.process_id:
+                                # Another process is already running this giveaway
+                                self.logger.warning(f"Another process (PID: {active.process_id}) is already running this giveaway. Exiting gracefully.")
+                                # Instead of calling shutdown(), just close the connection
+                                await self.close()
+                                return
+                            else:
+                                # This is our own process, we can continue
+                                self.logger.info(f"This is our own process (PID: {active.process_id}), continuing with giveaway")
+                        else:
+                            # Process is not running, clean up the stale entry
+                            self.logger.info(f"Cleaning up stale active giveaway entry for process {active.process_id}")
+                            db_session.delete(active)
+                            db_session.commit()
+                    except psutil.NoSuchProcess:
+                        # Process doesn't exist, clean up the stale entry
+                        self.logger.info(f"Cleaning up stale active giveaway entry for non-existent process {active.process_id}")
+                        db_session.delete(active)
+                        db_session.commit()
+
                 giveaway = db_session.query(Giveaway).filter_by(id=self.giveaway_id).first()
                 if giveaway:
+                    # Create new process tracker
+                    tracker = ProcessTracker(
+                        process_id=self.process_id,
+                        giveaway_id=self.giveaway_id
+                    )
+                    db_session.add(tracker)
+                    
+                    # Create or update active giveaway entry
+                    active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
+                    if active:
+                        active.process_id = self.process_id
+                    else:
+                        active = ActiveGiveaway(
+                            giveaway_id=self.giveaway_id,
+                            process_id=self.process_id
+                        )
+                        db_session.add(active)
+                    
+                    db_session.commit()
+
                     self.active_giveaway = giveaway
                     self.entries = []
-                    self.empty_rounds = 0  # Reset empty rounds counter when auto-starting
+                    self.empty_rounds = 0
                     self.logger.info(f"Giveaway '{giveaway.title}' is now active with threshold: {giveaway.threshold}")
                     self.giveaway_task = asyncio.create_task(self.manage_giveaways(None, giveaway))
+                    self.heartbeat_task = asyncio.create_task(self.update_heartbeat())
                 else:
                     self.logger.error(f"No giveaway found with ID {self.giveaway_id}")
+                    await self.close()
             except Exception as e:
                 self.logger.error(f"Error starting giveaway: {str(e)}")
+                await self.close()
             finally:
                 db_session.close()
 
@@ -129,19 +225,33 @@ class Bot(commands.Bot):
 
     @commands.command(name="enter")
     async def enter_giveaway(self, ctx):
-        if not self.active_giveaway:
-            print("No active giveaway found when entering.")
+        if not self.giveaway_id:
             await ctx.send("There is no active giveaway to join.")
             return
 
-        with lock:
-            if ctx.author.name not in self.entries:
-                self.entries.append(ctx.author.name)
-                print(f"{ctx.author.name} entered the giveaway. Current entries: {self.entries}")
-                await ctx.send(f"{ctx.author.name}, you have been entered into the giveaway!")
-            else:
-                print(f"{ctx.author.name} is already in the giveaway. Current entries: {self.entries}")
-                await ctx.send(f"{ctx.author.name}, you are already entered!")
+        db_session = SessionLocal()
+        try:
+            # Check if this is the active process for this giveaway
+            active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
+            if not active:
+                await ctx.send("There is no active giveaway to join.")
+                return
+            
+            # Only the process with the matching process_id should respond to entries
+            if active.process_id != self.process_id:
+                self.logger.info(f"Ignoring entry from {ctx.author.name} as this is not the active process for giveaway {self.giveaway_id}")
+                return
+
+            with lock:
+                if ctx.author.name not in self.entries:
+                    self.entries.append(ctx.author.name)
+                    self.logger.info(f"{ctx.author.name} entered the giveaway. Current entries: {self.entries}")
+                    await ctx.send(f"{ctx.author.name}, you have been entered into the giveaway!")
+                else:
+                    self.logger.info(f"{ctx.author.name} is already in the giveaway. Current entries: {self.entries}")
+                    await ctx.send(f"{ctx.author.name}, you are already entered!")
+        finally:
+            db_session.close()
 
     @commands.command(name="endgiveaway")
     async def end_giveaway(self, ctx):
@@ -317,20 +427,50 @@ class Bot(commands.Bot):
             db_session.close()
             await self.shutdown()
 
-
     async def shutdown(self):
-        """Shutdown the bot gracefully."""
-        self.logger.info("Shutting down chatbot...")
+        """Clean up when the bot shuts down."""
+        self.logger.info("Initiating bot shutdown...")
         try:
-            await self.close()
-            self.logger.info("Bot connection closed.")
-        except asyncio.CancelledError:
-            self.logger.info("Suppressed asyncio.CancelledError during shutdown.")
+            db_session = SessionLocal()
+            # Mark process tracker as inactive
+            tracker = db_session.query(ProcessTracker).filter_by(
+                process_id=self.process_id,
+                giveaway_id=self.giveaway_id
+            ).first()
+            if tracker:
+                tracker.is_active = False
+                db_session.commit()
+                self.logger.info(f"Marked process tracker {self.process_id} as inactive")
+
+            # Remove active giveaway record
+            active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
+            if active_giveaway:
+                db_session.delete(active_giveaway)
+                db_session.commit()
+                self.logger.info(f"Removed active giveaway record for giveaway {self.giveaway_id}")
+            db_session.close()
         except Exception as e:
-            self.logger.error(f"Error during bot shutdown: {e}")
+            self.logger.error(f"Error during shutdown cleanup: {e}")
         finally:
-            self.logger.info("Exiting system process.")
-            os._exit(0) 
+            # Cancel any running tasks
+            if self.heartbeat_task and not self.heartbeat_task.done():
+                self.heartbeat_task.cancel()
+                try:
+                    await self.heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if self.giveaway_task and not self.giveaway_task.done():
+                self.giveaway_task.cancel()
+                try:
+                    await self.giveaway_task
+                except asyncio.CancelledError:
+                    pass
+            
+            # Close the bot connection instead of calling super().shutdown()
+            self.logger.info("Closing bot connection...")
+            await self.close()
+            self.logger.info("Bot shutdown complete")
 
 
 if __name__ == "__main__":
@@ -343,4 +483,15 @@ if __name__ == "__main__":
         print(f"No channel specified, using default channel: {CHANNEL}")
     
     bot = Bot(giveaway_id=giveaway_id, channel_name=channel_name)
+    
+    # Set up signal handlers for graceful shutdown
+    import signal
+    
+    def signal_handler(sig, frame):
+        print(f"Received signal {sig}, shutting down...")
+        asyncio.create_task(bot.shutdown())
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     bot.run()

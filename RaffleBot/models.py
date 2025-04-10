@@ -1,10 +1,11 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Boolean, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, validates
 import re
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -51,6 +52,8 @@ class Giveaway(Base):
         cascade="none"
     )
     winners = relationship("Winner", back_populates="giveaway")
+    active_instances = relationship("ActiveGiveaway", back_populates="giveaway")
+    process_trackers = relationship("ProcessTracker", back_populates="giveaway")
 
 class Item(Base):
     __tablename__ = "items"
@@ -73,5 +76,26 @@ class Winner(Base):
     user = relationship("User", back_populates="winnings")
     giveaway = relationship("Giveaway", back_populates="winners")
     item = relationship("Item")
+
+class ActiveGiveaway(Base):
+    __tablename__ = "active_giveaways"
+    id = Column(Integer, primary_key=True, index=True)
+    giveaway_id = Column(Integer, ForeignKey("giveaways.id"), unique=True, nullable=False)
+    process_id = Column(Integer, nullable=False)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    channel_name = Column(String, nullable=False)
+    
+    giveaway = relationship("Giveaway", back_populates="active_instances")
+
+class ProcessTracker(Base):
+    __tablename__ = "process_trackers"
+    id = Column(Integer, primary_key=True, index=True)
+    process_id = Column(Integer, nullable=False)
+    giveaway_id = Column(Integer, ForeignKey("giveaways.id"), nullable=False)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_heartbeat = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    giveaway = relationship("Giveaway", back_populates="process_trackers")
 
 Base.metadata.create_all(bind=engine)
