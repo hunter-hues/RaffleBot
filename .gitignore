@@ -1,6 +1,80 @@
+# Environment variables
 .env
-chatbot.lock
-app.log
-.pytest_cache
-__pycache__
-flask_session
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.env/
+.venv/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Application specific
+*.log
+logs/
+*.lock
+chatbot_*.lock
+*.db
+*.sqlite
+*.sqlite3
+flask_session/
+*.session
+instance/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+giveaway.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Flask Session
+flask_session/
+*.session
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~

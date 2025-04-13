@@ -15,7 +15,6 @@ from logging.handlers import RotatingFileHandler
 import re
 import threading
 import time
-import sys
 
 # Load environment variables
 load_dotenv()
@@ -229,6 +228,7 @@ def dashboard():
         if not user:
             return redirect("/auth/twitch")
         
+        # Use joinedload to load active_instances relationship
         giveaways = (
             db_session.query(Giveaway)
             .filter_by(creator_id=user_id)
@@ -338,43 +338,71 @@ def delete_giveaway(id):
 
     return redirect("/dashboard")
 
-@app.route("/giveaway/start/<int:giveaway_id>", methods=["POST"])
+@app.route("/giveaway/start/<int:giveaway_id>")
 def start_giveaway(giveaway_id):
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
-    
+
     db_session = SessionLocal()
     try:
+        # Check if giveaway exists and user has permission
         giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id, creator_id=user_id).first()
         if not giveaway:
-            return "Giveaway not found", 404
+            return "Giveaway not found or you don't have permission to start it.", 403
+
+        # Clean up any stale process trackers
+        stale_trackers = db_session.query(ProcessTracker).filter_by(
+            giveaway_id=giveaway_id,
+            is_active=True
+        ).all()
         
-        # Check if giveaway is already active
-        active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
-        if active:
-            return "Giveaway is already running", 400
+        for tracker in stale_trackers:
+            try:
+                process = psutil.Process(tracker.process_id)
+                if not process.is_running():
+                    tracker.is_active = False
+            except psutil.NoSuchProcess:
+                tracker.is_active = False
         
+        db_session.commit()
+
+        # Check if giveaway is already running
+        active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
+        if active_giveaway:
+            # Check if process is still running
+            if psutil.pid_exists(active_giveaway.process_id):
+                return "This giveaway is already running.", 400
+            else:
+                # Clean up stale entry
+                db_session.delete(active_giveaway)
+                db_session.commit()
+
+        # Get the creator's username to use as the channel name
+        creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
+        if not creator:
+            return "Creator information is incomplete.", 400
+        
+        channel_name = creator.channel_name or creator.username.lower()
+
         # Start the chatbot process
-        bot_token = os.getenv("BOT_TOKEN")
-        if not bot_token:
-            return "Bot token not configured", 500
+        process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id), channel_name])
         
-        success = start_chatbot_process(giveaway_id, giveaway.creator.channel_name, bot_token)
-        if not success:
-            return "Failed to start giveaway", 500
-        
-        # Create active giveaway entry
+        # Record the active giveaway
         active_giveaway = ActiveGiveaway(
             giveaway_id=giveaway_id,
-            process_id=os.getpid(),
-            channel_name=giveaway.creator.channel_name,
-            should_stop=False
+            process_id=process.pid,
+            channel_name=channel_name
         )
         db_session.add(active_giveaway)
         db_session.commit()
-        
+
         return redirect("/dashboard")
+
+    except Exception as e:
+        db_session.rollback()
+        logger.error(f"Error starting giveaway: {str(e)}")
+        return f"Failed to start giveaway: {str(e)}", 500
     finally:
         db_session.close()
 
@@ -519,59 +547,50 @@ def stop_giveaway(giveaway_id):
         if not active_giveaway:
             return "This giveaway is not running.", 400
 
-        # In production, we'll use the worker to stop the giveaway
-        # For local development, we'll stop the process directly
-        if os.getenv('FLASK_ENV') == 'production':
-            # In production, we'll just mark the active giveaway for stopping
-            # The worker will pick it up and stop the process
-            active_giveaway.should_stop = True
-            db_session.commit()
-            logger.info(f"Marked giveaway {giveaway_id} for stopping")
-        else:
-            # For local development, stop the process directly
+        # Try to terminate the process
+        try:
+            process = psutil.Process(active_giveaway.process_id)
+            logger.info(f"Terminating process {active_giveaway.process_id} for giveaway {giveaway_id}")
+            process.terminate()
+            process.wait(timeout=5)  # Wait up to 5 seconds for the process to terminate
+            logger.info(f"Process {active_giveaway.process_id} terminated successfully")
+        except psutil.NoSuchProcess:
+            logger.info(f"Process {active_giveaway.process_id} already terminated")
+        except psutil.TimeoutExpired:
+            logger.warning(f"Process {active_giveaway.process_id} did not terminate in time, forcing kill")
+            process.kill()  # Force kill if it doesn't terminate
             try:
-                process = psutil.Process(active_giveaway.process_id)
-                logger.info(f"Terminating process {active_giveaway.process_id} for giveaway {giveaway_id}")
-                process.terminate()
-                process.wait(timeout=5)  # Wait up to 5 seconds for the process to terminate
-                logger.info(f"Process {active_giveaway.process_id} terminated successfully")
-            except psutil.NoSuchProcess:
-                logger.info(f"Process {active_giveaway.process_id} already terminated")
+                process.wait(timeout=2)  # Wait a bit more for the process to be killed
             except psutil.TimeoutExpired:
-                logger.warning(f"Process {active_giveaway.process_id} did not terminate in time, forcing kill")
-                process.kill()  # Force kill if it doesn't terminate
-                try:
-                    process.wait(timeout=2)  # Wait a bit more for the process to be killed
-                except psutil.TimeoutExpired:
-                    logger.error(f"Failed to kill process {active_giveaway.process_id}")
+                logger.error(f"Failed to kill process {active_giveaway.process_id}")
 
-            # Clean up any process trackers for this giveaway
-            trackers = db_session.query(ProcessTracker).filter_by(
-                giveaway_id=giveaway_id,
-                is_active=True
-            ).all()
+        # Clean up any process trackers for this giveaway
+        trackers = db_session.query(ProcessTracker).filter_by(
+            giveaway_id=giveaway_id,
+            is_active=True
+        ).all()
+        
+        for tracker in trackers:
+            try:
+                # Check if the process is still running
+                process = psutil.Process(tracker.process_id)
+                if process.is_running():
+                    logger.info(f"Terminating tracked process {tracker.process_id}")
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except psutil.TimeoutExpired:
+                        process.kill()
+            except psutil.NoSuchProcess:
+                pass  # Process already terminated
             
-            for tracker in trackers:
-                try:
-                    # Check if the process is still running
-                    process = psutil.Process(tracker.process_id)
-                    if process.is_running():
-                        logger.info(f"Terminating tracked process {tracker.process_id}")
-                        process.terminate()
-                        try:
-                            process.wait(timeout=3)
-                        except psutil.TimeoutExpired:
-                            process.kill()
-                except psutil.NoSuchProcess:
-                    pass  # Process already terminated
-                
-                # Mark tracker as inactive
-                tracker.is_active = False
-            
-            # Remove the active giveaway record
-            db_session.delete(active_giveaway)
-            db_session.commit()
-            logger.info(f"Giveaway {giveaway_id} stopped successfully")
+            # Mark tracker as inactive
+            tracker.is_active = False
+        
+        # Remove the active giveaway record
+        db_session.delete(active_giveaway)
+        db_session.commit()
+        logger.info(f"Giveaway {giveaway_id} stopped successfully")
 
         return redirect("/dashboard")
 
@@ -686,58 +705,6 @@ def cleanup_stale_processes():
 # Start the cleanup thread
 cleanup_thread = threading.Thread(target=cleanup_stale_processes, daemon=True)
 cleanup_thread.start()
-
-# Function to start chatbot process
-def start_chatbot_process(giveaway_id, channel_name, bot_token):
-    try:
-        # Create a process tracker entry
-        db_session = SessionLocal()
-        process_tracker = ProcessTracker(
-            process_id=os.getpid(),
-            giveaway_id=giveaway_id,
-            is_active=True
-        )
-        db_session.add(process_tracker)
-        db_session.commit()
-        
-        # Start the chatbot in a separate thread
-        chatbot_thread = threading.Thread(
-            target=run_chatbot,
-            args=(giveaway_id, channel_name, bot_token, process_tracker.id),
-            daemon=True
-        )
-        chatbot_thread.start()
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error starting chatbot process: {e}")
-        return False
-    finally:
-        db_session.close()
-
-# Function to run the chatbot
-def run_chatbot(giveaway_id, channel_name, bot_token, tracker_id):
-    try:
-        # Import the chatbot module here to avoid circular imports
-        from chatbot import Bot
-        
-        # Create and run the bot
-        bot = Bot(giveaway_id=giveaway_id, channel_name=channel_name, bot_token=bot_token)
-        bot.run()
-    except Exception as e:
-        logger.error(f"Error in chatbot thread: {e}")
-    finally:
-        # Update process tracker when done
-        db_session = SessionLocal()
-        try:
-            tracker = db_session.query(ProcessTracker).filter_by(id=tracker_id).first()
-            if tracker:
-                tracker.is_active = False
-                db_session.commit()
-        except Exception as e:
-            logger.error(f"Error updating process tracker: {e}")
-        finally:
-            db_session.close()
 
 if __name__ == "__main__":
     app.run(debug=True)

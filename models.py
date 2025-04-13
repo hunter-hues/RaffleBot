@@ -9,7 +9,7 @@ from datetime import datetime
 
 load_dotenv()
 
-# Use SQLite by default
+# Get database URL from environment, fallback to SQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///giveaway.db")
 
 # Create engine and session
@@ -84,7 +84,6 @@ class ActiveGiveaway(Base):
     process_id = Column(Integer, nullable=False)
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     channel_name = Column(String, nullable=False)
-    should_stop = Column(Boolean, default=False, nullable=False)
     
     giveaway = relationship("Giveaway", back_populates="active_instances")
 
