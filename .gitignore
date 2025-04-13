@@ -1,7 +1,6 @@
-RaffleBot/.env
-RaffleBot/.env.example
-RaffleBot/.env
-RaffleBot/chatbot.lock
-RaffleBot/.env.example
-RaffleBot/.env.example
-RaffleBot/app.log
+.env
+chatbot.lock
+app.log
+.pytest_cache
+__pycache__
+flask_session
