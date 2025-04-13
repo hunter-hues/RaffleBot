@@ -351,21 +351,12 @@ def start_giveaway(giveaway_id):
         if not giveaway:
             return "Giveaway not found or you don't have permission to start it.", 403
 
-        # Clean up any stale process trackers
-        stale_trackers = db_session.query(ProcessTracker).filter_by(
-            giveaway_id=giveaway_id,
-            is_active=True
-        ).all()
+        # Get the creator's username to use as the channel name
+        creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
+        if not creator:
+            return "Creator information is incomplete.", 400
         
-        for tracker in stale_trackers:
-            try:
-                process = psutil.Process(tracker.process_id)
-                if not process.is_running():
-                    tracker.is_active = False
-            except psutil.NoSuchProcess:
-                tracker.is_active = False
-        
-        db_session.commit()
+        channel_name = creator.channel_name or creator.username.lower()
 
         # Check if giveaway is already running
         active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
@@ -378,24 +369,31 @@ def start_giveaway(giveaway_id):
                 db_session.delete(active_giveaway)
                 db_session.commit()
 
-        # Get the creator's username to use as the channel name
-        creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
-        if not creator:
-            return "Creator information is incomplete.", 400
-        
-        channel_name = creator.channel_name or creator.username.lower()
-
-        # Start the chatbot process
-        process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id), channel_name])
-        
-        # Record the active giveaway
-        active_giveaway = ActiveGiveaway(
-            giveaway_id=giveaway_id,
-            process_id=process.pid,
-            channel_name=channel_name
-        )
-        db_session.add(active_giveaway)
-        db_session.commit()
+        # In production, we'll use the worker to start the giveaway
+        # For local development, we'll start the process directly
+        if os.getenv('FLASK_ENV') == 'production':
+            # In production, we'll just create the active giveaway entry
+            # The worker will pick it up and start the process
+            active_giveaway = ActiveGiveaway(
+                giveaway_id=giveaway_id,
+                process_id=0,  # Placeholder, will be updated by the worker
+                channel_name=channel_name
+            )
+            db_session.add(active_giveaway)
+            db_session.commit()
+            logger.info(f"Created active giveaway entry for giveaway {giveaway_id}")
+        else:
+            # For local development, start the process directly
+            process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id), channel_name])
+            
+            # Record the active giveaway
+            active_giveaway = ActiveGiveaway(
+                giveaway_id=giveaway_id,
+                process_id=process.pid,
+                channel_name=channel_name
+            )
+            db_session.add(active_giveaway)
+            db_session.commit()
 
         return redirect("/dashboard")
 
@@ -547,50 +545,59 @@ def stop_giveaway(giveaway_id):
         if not active_giveaway:
             return "This giveaway is not running.", 400
 
-        # Try to terminate the process
-        try:
-            process = psutil.Process(active_giveaway.process_id)
-            logger.info(f"Terminating process {active_giveaway.process_id} for giveaway {giveaway_id}")
-            process.terminate()
-            process.wait(timeout=5)  # Wait up to 5 seconds for the process to terminate
-            logger.info(f"Process {active_giveaway.process_id} terminated successfully")
-        except psutil.NoSuchProcess:
-            logger.info(f"Process {active_giveaway.process_id} already terminated")
-        except psutil.TimeoutExpired:
-            logger.warning(f"Process {active_giveaway.process_id} did not terminate in time, forcing kill")
-            process.kill()  # Force kill if it doesn't terminate
+        # In production, we'll use the worker to stop the giveaway
+        # For local development, we'll stop the process directly
+        if os.getenv('FLASK_ENV') == 'production':
+            # In production, we'll just mark the active giveaway for stopping
+            # The worker will pick it up and stop the process
+            active_giveaway.should_stop = True
+            db_session.commit()
+            logger.info(f"Marked giveaway {giveaway_id} for stopping")
+        else:
+            # For local development, stop the process directly
             try:
-                process.wait(timeout=2)  # Wait a bit more for the process to be killed
-            except psutil.TimeoutExpired:
-                logger.error(f"Failed to kill process {active_giveaway.process_id}")
-
-        # Clean up any process trackers for this giveaway
-        trackers = db_session.query(ProcessTracker).filter_by(
-            giveaway_id=giveaway_id,
-            is_active=True
-        ).all()
-        
-        for tracker in trackers:
-            try:
-                # Check if the process is still running
-                process = psutil.Process(tracker.process_id)
-                if process.is_running():
-                    logger.info(f"Terminating tracked process {tracker.process_id}")
-                    process.terminate()
-                    try:
-                        process.wait(timeout=3)
-                    except psutil.TimeoutExpired:
-                        process.kill()
+                process = psutil.Process(active_giveaway.process_id)
+                logger.info(f"Terminating process {active_giveaway.process_id} for giveaway {giveaway_id}")
+                process.terminate()
+                process.wait(timeout=5)  # Wait up to 5 seconds for the process to terminate
+                logger.info(f"Process {active_giveaway.process_id} terminated successfully")
             except psutil.NoSuchProcess:
-                pass  # Process already terminated
+                logger.info(f"Process {active_giveaway.process_id} already terminated")
+            except psutil.TimeoutExpired:
+                logger.warning(f"Process {active_giveaway.process_id} did not terminate in time, forcing kill")
+                process.kill()  # Force kill if it doesn't terminate
+                try:
+                    process.wait(timeout=2)  # Wait a bit more for the process to be killed
+                except psutil.TimeoutExpired:
+                    logger.error(f"Failed to kill process {active_giveaway.process_id}")
+
+            # Clean up any process trackers for this giveaway
+            trackers = db_session.query(ProcessTracker).filter_by(
+                giveaway_id=giveaway_id,
+                is_active=True
+            ).all()
             
-            # Mark tracker as inactive
-            tracker.is_active = False
-        
-        # Remove the active giveaway record
-        db_session.delete(active_giveaway)
-        db_session.commit()
-        logger.info(f"Giveaway {giveaway_id} stopped successfully")
+            for tracker in trackers:
+                try:
+                    # Check if the process is still running
+                    process = psutil.Process(tracker.process_id)
+                    if process.is_running():
+                        logger.info(f"Terminating tracked process {tracker.process_id}")
+                        process.terminate()
+                        try:
+                            process.wait(timeout=3)
+                        except psutil.TimeoutExpired:
+                            process.kill()
+                except psutil.NoSuchProcess:
+                    pass  # Process already terminated
+                
+                # Mark tracker as inactive
+                tracker.is_active = False
+            
+            # Remove the active giveaway record
+            db_session.delete(active_giveaway)
+            db_session.commit()
+            logger.info(f"Giveaway {giveaway_id} stopped successfully")
 
         return redirect("/dashboard")
 

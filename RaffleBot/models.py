@@ -84,6 +84,7 @@ class ActiveGiveaway(Base):
     process_id = Column(Integer, nullable=False)
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     channel_name = Column(String, nullable=False)
+    should_stop = Column(Boolean, default=False, nullable=False)
     
     giveaway = relationship("Giveaway", back_populates="active_instances")
 
