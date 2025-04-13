@@ -6,7 +6,7 @@ python-dotenv==1.0.0
 requests==2.31.0
 SQLAlchemy==2.0.23
 psycopg2-binary==2.9.9
-Werkzeug==2.3.7
+Werkzeug==3.0.1
 twitchio==2.6.0
 python-jose==3.3.0
 redis==4.6.0
