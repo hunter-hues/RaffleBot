@@ -1,62 +1,78 @@
 # Twitch Giveaway Bot
 
-A Flask-based web application for managing Twitch giveaways.
+A Flask-based application for managing Twitch giveaways with a chatbot interface.
 
 ## Features
 
 - Create and manage giveaways
 - Connect to Twitch chat
-- Automatically select winners
-- Track giveaway history
 - Secure authentication with Twitch
+- Rate limiting and security features
+- SQLite database for data storage
 
 ## Local Development
 
 1. Clone the repository
 2. Install dependencies: `pip install -r requirements.txt`
-3. Create a `.env` file based on `.env.example`
+3. Create a `.env` file with your Twitch API credentials
 4. Run the application: `python app.py`
 
-## Deployment on Render
+## Deployment on Render (Free Tier)
+
+This application is configured to deploy on Render's free tier with minimal costs.
 
 ### Prerequisites
 
-- A Render account
-- A PostgreSQL database (Render provides this)
-- Twitch API credentials
+- A Render account (requires credit card even for free tier)
+- Twitch API credentials (Client ID, Client Secret, Bot Token)
 
-### Steps
+### Deployment Steps
 
-1. Create a new Web Service on Render
-2. Connect your GitHub repository
-3. Configure the service:
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `gunicorn app:app`
-   - Environment Variables: Copy from `.env.example` and fill in your values
+1. **Push your code to GitHub**
 
-4. Create a new Worker Service on Render
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `python worker.py`
-   - Environment Variables: Copy from `.env.example` and fill in your values
+2. **Create a new Web Service on Render**
+   - Go to [render.com](https://render.com/) and sign in
+   - Click "New" and select "Web Service"
+   - Connect your GitHub repository
+   - Select the repository containing this code
+   - Configure the service:
+     - Name: `giveaway-bot-web`
+     - Environment: `Python`
+     - Build Command: `pip install -r requirements.txt`
+     - Start Command: `gunicorn app:app`
+     - Select the "Free" plan
 
-5. Create a PostgreSQL database on Render
-   - Name: `giveaway_db`
-   - User: `giveaway_user`
-   - Password: Generate a secure password
+3. **Configure Environment Variables**
+   - Add the following environment variables:
+     - `FLASK_SECRET_KEY`: A random secret key
+     - `TWITCH_CLIENT_ID`: Your Twitch API client ID
+     - `TWITCH_CLIENT_SECRET`: Your Twitch API client secret
+     - `BOT_TOKEN`: Your Twitch bot token
+     - `REDIRECT_URI`: Your Render URL + `/auth/twitch/callback` (e.g., `https://your-app-name.onrender.com/auth/twitch/callback`)
+     - `FLASK_ENV`: `production`
+     - `SESSION_COOKIE_SECURE`: `true`
+     - `SESSION_COOKIE_HTTPONLY`: `true`
+     - `SESSION_COOKIE_SAMESITE`: `Lax`
+     - `LOG_LEVEL`: `INFO`
+     - `RATE_LIMIT_DEFAULT`: `10/minute`
+     - `RATE_LIMIT_AUTH`: `5/minute`
 
-6. Update the `DATABASE_URL` environment variable in both services to point to your Render PostgreSQL database
+4. **Deploy the Service**
+   - Click "Create Web Service"
+   - Render will build and deploy your application
+   - Once deployed, you'll receive a URL for your application
 
-7. Deploy the services
+### Important Notes
 
-## Environment Variables
+- The free tier of Render has limitations:
+  - Services may spin down after 15 minutes of inactivity
+  - Limited bandwidth and compute hours
+  - The first request after inactivity may be slow
 
-- `DATABASE_URL`: PostgreSQL connection string
-- `FLASK_SECRET_KEY`: Secret key for Flask sessions
-- `TWITCH_CLIENT_ID`: Twitch API client ID
-- `TWITCH_CLIENT_SECRET`: Twitch API client secret
-- `BOT_TOKEN`: Twitch bot OAuth token
-- `REDIRECT_URI`: OAuth redirect URI (must match your Twitch app settings)
+- The application uses SQLite for data storage, which is suitable for the free tier
+- The chatbot runs in a separate thread within the web service
+- For production use with higher traffic, consider upgrading to a paid plan
 
 ## License
 
-MIT 
+This project is licensed under the MIT License - see the LICENSE file for details. 

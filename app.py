@@ -15,6 +15,7 @@ from logging.handlers import RotatingFileHandler
 import re
 import threading
 import time
+import sys
 
 # Load environment variables
 load_dotenv()
@@ -228,7 +229,6 @@ def dashboard():
         if not user:
             return redirect("/auth/twitch")
         
-        # Use joinedload to load active_instances relationship
         giveaways = (
             db_session.query(Giveaway)
             .filter_by(creator_id=user_id)
@@ -338,69 +338,43 @@ def delete_giveaway(id):
 
     return redirect("/dashboard")
 
-@app.route("/giveaway/start/<int:giveaway_id>")
+@app.route("/giveaway/start/<int:giveaway_id>", methods=["POST"])
 def start_giveaway(giveaway_id):
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
-
+    
     db_session = SessionLocal()
     try:
-        # Check if giveaway exists and user has permission
         giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id, creator_id=user_id).first()
         if not giveaway:
-            return "Giveaway not found or you don't have permission to start it.", 403
-
-        # Get the creator's username to use as the channel name
-        creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
-        if not creator:
-            return "Creator information is incomplete.", 400
+            return "Giveaway not found", 404
         
-        channel_name = creator.channel_name or creator.username.lower()
-
-        # Check if giveaway is already running
-        active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
-        if active_giveaway:
-            # Check if process is still running
-            if psutil.pid_exists(active_giveaway.process_id):
-                return "This giveaway is already running.", 400
-            else:
-                # Clean up stale entry
-                db_session.delete(active_giveaway)
-                db_session.commit()
-
-        # In production, we'll use the worker to start the giveaway
-        # For local development, we'll start the process directly
-        if os.getenv('FLASK_ENV') == 'production':
-            # In production, we'll just create the active giveaway entry
-            # The worker will pick it up and start the process
-            active_giveaway = ActiveGiveaway(
-                giveaway_id=giveaway_id,
-                process_id=0,  # Placeholder, will be updated by the worker
-                channel_name=channel_name
-            )
-            db_session.add(active_giveaway)
-            db_session.commit()
-            logger.info(f"Created active giveaway entry for giveaway {giveaway_id}")
-        else:
-            # For local development, start the process directly
-            process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id), channel_name])
-            
-            # Record the active giveaway
-            active_giveaway = ActiveGiveaway(
-                giveaway_id=giveaway_id,
-                process_id=process.pid,
-                channel_name=channel_name
-            )
-            db_session.add(active_giveaway)
-            db_session.commit()
-
+        # Check if giveaway is already active
+        active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
+        if active:
+            return "Giveaway is already running", 400
+        
+        # Start the chatbot process
+        bot_token = os.getenv("BOT_TOKEN")
+        if not bot_token:
+            return "Bot token not configured", 500
+        
+        success = start_chatbot_process(giveaway_id, giveaway.creator.channel_name, bot_token)
+        if not success:
+            return "Failed to start giveaway", 500
+        
+        # Create active giveaway entry
+        active_giveaway = ActiveGiveaway(
+            giveaway_id=giveaway_id,
+            process_id=os.getpid(),
+            channel_name=giveaway.creator.channel_name,
+            should_stop=False
+        )
+        db_session.add(active_giveaway)
+        db_session.commit()
+        
         return redirect("/dashboard")
-
-    except Exception as e:
-        db_session.rollback()
-        logger.error(f"Error starting giveaway: {str(e)}")
-        return f"Failed to start giveaway: {str(e)}", 500
     finally:
         db_session.close()
 
@@ -712,6 +686,58 @@ def cleanup_stale_processes():
 # Start the cleanup thread
 cleanup_thread = threading.Thread(target=cleanup_stale_processes, daemon=True)
 cleanup_thread.start()
+
+# Function to start chatbot process
+def start_chatbot_process(giveaway_id, channel_name, bot_token):
+    try:
+        # Create a process tracker entry
+        db_session = SessionLocal()
+        process_tracker = ProcessTracker(
+            process_id=os.getpid(),
+            giveaway_id=giveaway_id,
+            is_active=True
+        )
+        db_session.add(process_tracker)
+        db_session.commit()
+        
+        # Start the chatbot in a separate thread
+        chatbot_thread = threading.Thread(
+            target=run_chatbot,
+            args=(giveaway_id, channel_name, bot_token, process_tracker.id),
+            daemon=True
+        )
+        chatbot_thread.start()
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error starting chatbot process: {e}")
+        return False
+    finally:
+        db_session.close()
+
+# Function to run the chatbot
+def run_chatbot(giveaway_id, channel_name, bot_token, tracker_id):
+    try:
+        # Import the chatbot module here to avoid circular imports
+        from chatbot import Bot
+        
+        # Create and run the bot
+        bot = Bot(giveaway_id=giveaway_id, channel_name=channel_name, bot_token=bot_token)
+        bot.run()
+    except Exception as e:
+        logger.error(f"Error in chatbot thread: {e}")
+    finally:
+        # Update process tracker when done
+        db_session = SessionLocal()
+        try:
+            tracker = db_session.query(ProcessTracker).filter_by(id=tracker_id).first()
+            if tracker:
+                tracker.is_active = False
+                db_session.commit()
+        except Exception as e:
+            logger.error(f"Error updating process tracker: {e}")
+        finally:
+            db_session.close()
 
 if __name__ == "__main__":
     app.run(debug=True)

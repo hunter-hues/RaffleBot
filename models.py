@@ -9,7 +9,7 @@ from datetime import datetime
 
 load_dotenv()
 
-# Get database URL from environment, fallback to SQLite
+# Use SQLite by default
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///giveaway.db")
 
 # Create engine and session
