@@ -9,12 +9,21 @@ import logging
 from dotenv import load_dotenv
 import psutil
 from datetime import datetime
+from flask import Flask
+from waitress import serve
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Create Flask app
+app = Flask(__name__)
+
+@app.route('/wake')
+def wake():
+    return "I'm awake!", 200
 
 # Environment variables
 BOT_NICK = os.getenv("BOT_NICK", "rafflebot_giveaways")
@@ -494,4 +503,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
+    # Start Flask server in a separate thread using waitress
+    threading.Thread(target=serve, args=(app,), kwargs={"host": "0.0.0.0", "port": 5001}, daemon=True).start()
+    
+    # Run the bot
     bot.run()
