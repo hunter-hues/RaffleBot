@@ -216,28 +216,46 @@ def auth_twitch_callback():
     return redirect("/dashboard")
 
 @app.route("/dashboard")
-@limiter.limit("10 per minute")
 def dashboard():
-    print(f"Session: {session}")
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
+
     db_session = SessionLocal()
     try:
-        user = db_session.query(User).filter_by(id=user_id).first()
-        if not user:
-            return redirect("/auth/twitch")
+        # Get user's giveaways
+        giveaways = db_session.query(Giveaway).filter_by(creator_id=user_id).all()
         
-        # Use joinedload to load active_instances relationship
-        giveaways = (
-            db_session.query(Giveaway)
-            .filter_by(creator_id=user_id)
-            .options(joinedload(Giveaway.active_instances))
-            .all()
-        )
-        winners = db_session.query(Winner).join(Giveaway).filter(Giveaway.creator_id == user_id).all()
-        
-        return render_template("dashboard.html", giveaways=giveaways, winners=winners)
+        # For each giveaway, check if it's running by querying the chatbot's status endpoint
+        for giveaway in giveaways:
+            active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway.id).first()
+            if active_giveaway:
+                try:
+                    # Try to get status from the chatbot
+                    response = requests.get(f'http://localhost:5001/status', timeout=1)
+                    if response.status_code == 200:
+                        status_data = response.json()
+                        # Check if this giveaway is in the active giveaways list
+                        giveaway.is_running = any(
+                            ag['id'] == giveaway.id 
+                            for ag in status_data.get('active_giveaways', [])
+                        )
+                    else:
+                        giveaway.is_running = False
+                except requests.RequestException:
+                    # If we can't reach the chatbot, check if the process is still running
+                    try:
+                        process = psutil.Process(active_giveaway.process_id)
+                        giveaway.is_running = process.is_running()
+                    except psutil.NoSuchProcess:
+                        giveaway.is_running = False
+                        # Clean up stale active giveaway
+                        db_session.delete(active_giveaway)
+                        db_session.commit()
+            else:
+                giveaway.is_running = False
+
+        return render_template("dashboard.html", giveaways=giveaways)
     finally:
         db_session.close()
 
@@ -351,32 +369,10 @@ def start_giveaway(giveaway_id):
         if not giveaway:
             return "Giveaway not found or you don't have permission to start it.", 403
 
-        # Clean up any stale process trackers
-        stale_trackers = db_session.query(ProcessTracker).filter_by(
-            giveaway_id=giveaway_id,
-            is_active=True
-        ).all()
-        
-        for tracker in stale_trackers:
-            try:
-                process = psutil.Process(tracker.process_id)
-                if not process.is_running():
-                    tracker.is_active = False
-            except psutil.NoSuchProcess:
-                tracker.is_active = False
-        
-        db_session.commit()
-
         # Check if giveaway is already running
         active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
         if active_giveaway:
-            # Check if process is still running
-            if psutil.pid_exists(active_giveaway.process_id):
-                return "This giveaway is already running.", 400
-            else:
-                # Clean up stale entry
-                db_session.delete(active_giveaway)
-                db_session.commit()
+            return "This giveaway is already running.", 400
 
         # Get the creator's username to use as the channel name
         creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
@@ -385,13 +381,18 @@ def start_giveaway(giveaway_id):
         
         channel_name = creator.channel_name or creator.username.lower()
 
-        # Start the chatbot process
-        process = subprocess.Popen(["python", "chatbot.py", str(giveaway_id), channel_name])
+        # Check if chatbot is running
+        try:
+            response = requests.get('http://localhost:5001/wake', timeout=1)
+            if response.status_code != 200:
+                return "Chatbot is not running. Please start chatbot.py first.", 503
+        except requests.RequestException:
+            return "Chatbot is not running. Please start chatbot.py first.", 503
         
         # Record the active giveaway
         active_giveaway = ActiveGiveaway(
             giveaway_id=giveaway_id,
-            process_id=process.pid,
+            process_id=os.getpid(),  # Use the chatbot's process ID
             channel_name=channel_name
         )
         db_session.add(active_giveaway)
@@ -547,46 +548,6 @@ def stop_giveaway(giveaway_id):
         if not active_giveaway:
             return "This giveaway is not running.", 400
 
-        # Try to terminate the process
-        try:
-            process = psutil.Process(active_giveaway.process_id)
-            logger.info(f"Terminating process {active_giveaway.process_id} for giveaway {giveaway_id}")
-            process.terminate()
-            process.wait(timeout=5)  # Wait up to 5 seconds for the process to terminate
-            logger.info(f"Process {active_giveaway.process_id} terminated successfully")
-        except psutil.NoSuchProcess:
-            logger.info(f"Process {active_giveaway.process_id} already terminated")
-        except psutil.TimeoutExpired:
-            logger.warning(f"Process {active_giveaway.process_id} did not terminate in time, forcing kill")
-            process.kill()  # Force kill if it doesn't terminate
-            try:
-                process.wait(timeout=2)  # Wait a bit more for the process to be killed
-            except psutil.TimeoutExpired:
-                logger.error(f"Failed to kill process {active_giveaway.process_id}")
-
-        # Clean up any process trackers for this giveaway
-        trackers = db_session.query(ProcessTracker).filter_by(
-            giveaway_id=giveaway_id,
-            is_active=True
-        ).all()
-        
-        for tracker in trackers:
-            try:
-                # Check if the process is still running
-                process = psutil.Process(tracker.process_id)
-                if process.is_running():
-                    logger.info(f"Terminating tracked process {tracker.process_id}")
-                    process.terminate()
-                    try:
-                        process.wait(timeout=3)
-                    except psutil.TimeoutExpired:
-                        process.kill()
-            except psutil.NoSuchProcess:
-                pass  # Process already terminated
-            
-            # Mark tracker as inactive
-            tracker.is_active = False
-        
         # Remove the active giveaway record
         db_session.delete(active_giveaway)
         db_session.commit()

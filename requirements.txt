@@ -11,3 +11,4 @@ twitchio==2.6.0
 python-jose==3.3.0
 redis==4.6.0
 gunicorn==21.2.0
+waitress==2.1.2

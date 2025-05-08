@@ -9,21 +9,190 @@ import logging
 from dotenv import load_dotenv
 import psutil
 from datetime import datetime
-from flask import Flask
+from flask import Flask, session, redirect, request, render_template, jsonify
 from waitress import serve
+from flask_session import Session
+import requests
+from functools import wraps
+import time
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create console handler with formatting
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# Also configure the root logger to show all logs
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(console_handler)
 
 # Create Flask app
 app = Flask(__name__)
 
+# Global bot instance
+bot = None
+
+# Security configurations
+app.config.update(
+    SECRET_KEY=os.getenv('FLASK_SECRET_KEY', os.urandom(24)),
+    SESSION_COOKIE_SECURE=os.getenv('SESSION_COOKIE_SECURE', 'True').lower() == 'true',
+    SESSION_COOKIE_HTTPONLY=os.getenv('SESSION_COOKIE_HTTPONLY', 'True').lower() == 'true',
+    SESSION_COOKIE_SAMESITE=os.getenv('SESSION_COOKIE_SAMESITE', 'Lax'),
+    PERMANENT_SESSION_LIFETIME=3600,  # 1 hour
+    SESSION_TYPE='filesystem'
+)
+
+# Initialize session
+Session(app)
+
+# Environment variables for Twitch OAuth
+CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
+CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("CHATBOT_REDIRECT_URI", "http://localhost:5001/auth/twitch/callback")
+
+if not all([CLIENT_ID, CLIENT_SECRET]):
+    logger.error("Missing required environment variables: TWITCH_CLIENT_ID or TWITCH_CLIENT_SECRET")
+    raise ValueError("Missing required environment variables")
+
+# Authentication decorator
+def require_twitch_auth(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect('/auth/twitch')
+        if session.get('username') != 'hunter_hues':
+            return "Unauthorized", 403
+        return f(*args, **kwargs)
+    return decorated_function
+
 @app.route('/wake')
 def wake():
     return "I'm awake!", 200
+
+@app.route('/')
+@require_twitch_auth
+def status_page():
+    return render_template('chatbot_status.html')
+
+@app.route('/status')
+def status_api():
+    """API endpoint to check the status of all active giveaways."""
+    try:
+        db_session = SessionLocal()
+        active_giveaways = []
+        
+        # Get all active giveaways from the database
+        active_records = db_session.query(ActiveGiveaway).all()
+        
+        for active in active_records:
+            giveaway = db_session.query(Giveaway).filter_by(id=active.giveaway_id).first()
+            if giveaway:
+                # Get entries count from the bot's state if available
+                entries_count = 0
+                if bot and active.giveaway_id in bot.giveaways:
+                    entries_count = len(bot.giveaways[active.giveaway_id]['entries'])
+                
+                active_giveaways.append({
+                    'id': giveaway.id,
+                    'title': giveaway.title,
+                    'channel_name': active.channel_name,
+                    'frequency': giveaway.frequency,
+                    'threshold': giveaway.threshold,
+                    'entries_count': entries_count,
+                    'last_updated': datetime.utcnow().isoformat()
+                })
+        
+        return jsonify({
+            'running': True,
+            'active_giveaways': active_giveaways
+        })
+    except Exception as e:
+        return jsonify({
+            'running': False,
+            'error': str(e)
+        })
+    finally:
+        db_session.close()
+
+@app.route('/auth/twitch')
+def auth_twitch():
+    return redirect(
+        f"https://id.twitch.tv/oauth2/authorize"
+        f"?client_id={CLIENT_ID}"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope=user:read:email"
+    )
+
+@app.route('/auth/twitch/callback')
+def auth_twitch_callback():
+    code = request.args.get("code")
+    if not code:
+        return "Authorization failed: missing code", 400
+
+    try:
+        token_response = requests.post(
+            "https://id.twitch.tv/oauth2/token",
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": REDIRECT_URI,
+            },
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+
+        if "access_token" not in token_data:
+            logger.error("Twitch API response missing access_token.")
+            return "Authorization failed: missing access token", 400
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Twitch API error during token exchange: {e}")
+        return "Authorization failed due to Twitch API error", 400
+
+    try:
+        user_response = requests.get(
+            "https://api.twitch.tv/helix/users",
+            headers={
+                "Authorization": f"Bearer {token_data['access_token']}",
+                "Client-Id": CLIENT_ID
+            }
+        )
+        user_response.raise_for_status()
+        user_data = user_response.json()
+
+        if "data" not in user_data or not user_data["data"]:
+            logger.error("Twitch user data is missing or empty.")
+            return "Authorization failed: unable to fetch user data", 400
+
+        user_info = user_data["data"][0]
+        
+        # Only allow hunter_hues to access
+        if user_info["display_name"].lower() != "hunter_hues":
+            return "Unauthorized", 403
+
+        session["user_id"] = user_info["id"]
+        session["username"] = user_info["display_name"]
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Twitch API error while fetching user data: {e}")
+        return "Authorization failed due to Twitch API error", 400
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return "Authorization failed due to an unexpected error", 400
+
+    return redirect("/")
 
 # Environment variables
 BOT_NICK = os.getenv("BOT_NICK", "rafflebot_giveaways")
@@ -35,9 +204,6 @@ if not BOT_TOKEN:
     logger.error("Missing required environment variable: BOT_TOKEN")
     raise ValueError("Missing required environment variable: BOT_TOKEN")
 
-active_giveaway = None
-entries = []
-giveaway_task = None 
 lock = threading.Lock()
 
 def is_giveaway_owner(ctx, giveaway):
@@ -47,29 +213,25 @@ def is_giveaway_owner(ctx, giveaway):
     return user and user.id == giveaway.creator_id
 
 class Bot(commands.Bot):
-
-    def __init__(self, giveaway_id=None, channel_name=None):
-        initial_channel = channel_name or CHANNEL
-        super().__init__(token=BOT_TOKEN, prefix=BOT_PREFIX, initial_channels=[initial_channel])
-        self.giveaway_id = giveaway_id
-        self._connected_channels = []
+    def __init__(self):
+        # Initialize with an empty list of channels - we'll join them as needed
+        super().__init__(token=BOT_TOKEN, prefix=BOT_PREFIX, initial_channels=[])
+        self._connected_channels = set()  # Use a set for better performance
         self._nick = BOT_NICK 
-        self.empty_rounds = 0
-        self.channel_name = channel_name
-        self.logger = logging.getLogger(f"Bot-{channel_name or 'default'}")
-        self.active_giveaway = None
-        self.entries = []
-        self.giveaway_task = None
+        self.logger = logging.getLogger("Bot")
+        self.giveaways = {}  # Dictionary to store giveaway states
         self.heartbeat_task = None
         self.process_id = os.getpid()
+        self.is_ready = False
+        self.logger.info("Bot initialized")
 
     @property
     def connected_channels(self):
-        return self._connected_channels
+        return list(self._connected_channels)
 
     @connected_channels.setter
     def connected_channels(self, channels):
-        self._connected_channels = channels
+        self._connected_channels = set(channels)
 
     @property
     def nick(self):
@@ -84,14 +246,16 @@ class Bot(commands.Bot):
         while True:
             try:
                 db_session = SessionLocal()
-                tracker = db_session.query(ProcessTracker).filter_by(
-                    process_id=self.process_id,
-                    giveaway_id=self.giveaway_id
-                ).first()
-                
-                if tracker:
-                    tracker.last_heartbeat = datetime.utcnow()
-                    db_session.commit()
+                # Update heartbeat for all active giveaways
+                for giveaway_id in self.giveaways.keys():
+                    tracker = db_session.query(ProcessTracker).filter_by(
+                        process_id=self.process_id,
+                        giveaway_id=giveaway_id
+                    ).first()
+                    
+                    if tracker:
+                        tracker.last_heartbeat = datetime.utcnow()
+                        db_session.commit()
                 db_session.close()
             except Exception as e:
                 self.logger.error(f"Error updating heartbeat: {e}")
@@ -99,102 +263,235 @@ class Bot(commands.Bot):
 
     async def event_ready(self):
         """Called once when the bot goes online."""
-        self.logger.info(f"Bot is ready! Connected to channel: {self.channel_name}")
-        if self.giveaway_id:
-            self.logger.info(f"Managing giveaway ID: {self.giveaway_id}")
-
-        self.connected_channels = list(self.connected_channels) or [self.channel_name or CHANNEL] 
-        self.logger.info(f"Connected channels: {self.connected_channels}")
-
-        if not self.connected_channels:
-            self.logger.warning("Bot is not connected to any channels.")
+        self.logger.info(f"Bot is ready! Logged in as {self.nick}")
+        self.is_ready = True
         
-        if self.giveaway_id:
-            self.logger.info(f"Auto-starting giveaway ID: {self.giveaway_id}")
-            db_session = SessionLocal()
+        # Start heartbeat task
+        self.heartbeat_task = asyncio.create_task(self.update_heartbeat())
+        self.logger.info("Heartbeat task started")
+        
+        # Start polling for giveaways
+        asyncio.create_task(self.poll_giveaways())
+        self.logger.info("Giveaway polling task started")
+
+    async def join_channel_with_retry(self, channel_name, max_retries=3):
+        """Attempt to join a channel with retries."""
+        channel_name = channel_name.lower()
+        
+        # If we're already in the channel, return True
+        if channel_name in self._connected_channels:
+            self.logger.info(f"Already in channel {channel_name}")
+            return True
+
+        for attempt in range(max_retries):
             try:
-                # Clean up any stale process trackers
-                stale_trackers = db_session.query(ProcessTracker).filter_by(
-                    giveaway_id=self.giveaway_id,
-                    is_active=True
-                ).all()
+                self.logger.info(f"Attempting to join channel {channel_name} (attempt {attempt + 1}/{max_retries})")
                 
-                for tracker in stale_trackers:
-                    try:
-                        process = psutil.Process(tracker.process_id)
-                        if not process.is_running():
-                            tracker.is_active = False
-                            self.logger.info(f"Marked stale tracker {tracker.process_id} as inactive")
-                    except psutil.NoSuchProcess:
-                        tracker.is_active = False
-                        self.logger.info(f"Marked non-existent tracker {tracker.process_id} as inactive")
+                # Join the channel
+                await self.join_channels([channel_name])
                 
-                db_session.commit()
-
-                # Check if there's already an active giveaway with a running process
-                active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
-                if active:
-                    try:
-                        # Check if the process is still running
-                        process = psutil.Process(active.process_id)
-                        if process.is_running():
-                            # Check if the process is actually our bot
-                            if active.process_id != self.process_id:
-                                # Another process is already running this giveaway
-                                self.logger.warning(f"Another process (PID: {active.process_id}) is already running this giveaway. Exiting gracefully.")
-                                # Instead of calling shutdown(), just close the connection
-                                await self.close()
-                                return
-                            else:
-                                # This is our own process, we can continue
-                                self.logger.info(f"This is our own process (PID: {active.process_id}), continuing with giveaway")
-                        else:
-                            # Process is not running, clean up the stale entry
-                            self.logger.info(f"Cleaning up stale active giveaway entry for process {active.process_id}")
-                            db_session.delete(active)
-                            db_session.commit()
-                    except psutil.NoSuchProcess:
-                        # Process doesn't exist, clean up the stale entry
-                        self.logger.info(f"Cleaning up stale active giveaway entry for non-existent process {active.process_id}")
-                        db_session.delete(active)
-                        db_session.commit()
-
-                giveaway = db_session.query(Giveaway).filter_by(id=self.giveaway_id).first()
-                if giveaway:
-                    # Create new process tracker
-                    tracker = ProcessTracker(
-                        process_id=self.process_id,
-                        giveaway_id=self.giveaway_id
-                    )
-                    db_session.add(tracker)
-                    
-                    # Create or update active giveaway entry
-                    active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
-                    if active:
-                        active.process_id = self.process_id
-                    else:
-                        active = ActiveGiveaway(
-                            giveaway_id=self.giveaway_id,
-                            process_id=self.process_id
-                        )
-                        db_session.add(active)
-                    
-                    db_session.commit()
-
-                    self.active_giveaway = giveaway
-                    self.entries = []
-                    self.empty_rounds = 0
-                    self.logger.info(f"Giveaway '{giveaway.title}' is now active with threshold: {giveaway.threshold}")
-                    self.giveaway_task = asyncio.create_task(self.manage_giveaways(None, giveaway))
-                    self.heartbeat_task = asyncio.create_task(self.update_heartbeat())
+                # Wait for join to complete
+                await asyncio.sleep(2)
+                
+                # Verify we're in the channel
+                if channel_name in self._connected_channels:
+                    self.logger.info(f"Successfully joined channel: {channel_name}")
+                    return True
                 else:
-                    self.logger.error(f"No giveaway found with ID {self.giveaway_id}")
-                    await self.close()
+                    self.logger.warning(f"Channel {channel_name} not in connected_channels after join attempt")
+                    
+                    # Try to force a reconnection
+                    if attempt < max_retries - 1:
+                        self.logger.info(f"Attempting to reconnect to Twitch...")
+                        await self.close()
+                        await asyncio.sleep(2)
+                        await self.connect()
+                        await asyncio.sleep(2)
+                
             except Exception as e:
-                self.logger.error(f"Error starting giveaway: {str(e)}")
-                await self.close()
+                self.logger.error(f"Error joining channel {channel_name} (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
+        
+        return False
+
+    async def event_join(self, channel, user):
+        """Called when a user joins a channel."""
+        if user.name.lower() == self._nick.lower():
+            self.logger.info(f"Successfully joined channel: {channel.name}")
+            self._connected_channels.add(channel.name.lower())
+
+    async def event_part(self, channel, user):
+        """Called when a user parts from a channel."""
+        if user.name.lower() == self._nick.lower():
+            self.logger.info(f"Left channel: {channel.name}")
+            self._connected_channels.discard(channel.name.lower())
+
+    async def poll_giveaways(self):
+        """Poll the database for active giveaways."""
+        self.logger.info("Starting to poll for giveaways")
+        while True:
+            try:
+                if not self.is_ready:
+                    self.logger.info("Bot not ready yet, waiting...")
+                    await asyncio.sleep(5)
+                    continue
+
+                db_session = SessionLocal()
+                
+                # Get all active giveaways
+                active_giveaways = db_session.query(ActiveGiveaway).all()
+                self.logger.info(f"Found {len(active_giveaways)} active giveaways")
+                
+                # Update our giveaways dictionary
+                current_giveaways = set(self.giveaways.keys())
+                new_giveaways = set()
+                
+                for active in active_giveaways:
+                    new_giveaways.add(active.giveaway_id)
+                    if active.giveaway_id not in self.giveaways:
+                        # New giveaway found, start managing it
+                        giveaway = db_session.query(Giveaway).filter_by(id=active.giveaway_id).first()
+                        if giveaway:
+                            self.logger.info(f"Starting new giveaway: {giveaway.title}")
+                            self.giveaways[active.giveaway_id] = {
+                                'giveaway': giveaway,
+                                'entries': [],
+                                'empty_rounds': 0,
+                                'task': None,
+                                'channel_name': active.channel_name.lower()
+                            }
+                            # Start managing this giveaway
+                            self.giveaways[active.giveaway_id]['task'] = asyncio.create_task(
+                                self.manage_giveaway(active.giveaway_id)
+                            )
+                
+                # Stop managing giveaways that are no longer active
+                for giveaway_id in current_giveaways - new_giveaways:
+                    if giveaway_id in self.giveaways:
+                        self.logger.info(f"Stopping giveaway {giveaway_id}")
+                        if self.giveaways[giveaway_id]['task']:
+                            self.giveaways[giveaway_id]['task'].cancel()
+                        del self.giveaways[giveaway_id]
+                
+                db_session.close()
+            except Exception as e:
+                self.logger.error(f"Error polling giveaways: {e}")
+            
+            await asyncio.sleep(10)  # Poll every 10 seconds
+
+    async def manage_giveaway(self, giveaway_id):
+        """Manage a single giveaway."""
+        try:
+            giveaway_data = self.giveaways[giveaway_id]
+            giveaway = giveaway_data['giveaway']
+            self.logger.info(f"Managing giveaway: {giveaway.title}")
+            
+            db_session = SessionLocal()
+            items = db_session.query(Item).filter_by(giveaway_id=giveaway.id, is_won=False).all()
+            
+            if not items:
+                self.logger.info(f"No items found for giveaway '{giveaway.title}'")
+                return
+            
+            # Ensure we're in the channel
+            channel_name = giveaway_data['channel_name'].lower()
+            if not await self.join_channel_with_retry(channel_name):
+                self.logger.error(f"Failed to join channel {channel_name} after multiple attempts")
+                return
+            
+            channel = self.get_channel(channel_name)
+            if not channel:
+                self.logger.error(f"Could not find channel {channel_name}")
+                return
+
+            self.logger.info(f"Starting giveaway loop for {giveaway.title}")
+            while True:  # Loop until giveaway ends
+                # Refresh items list to get latest won status
+                items = db_session.query(Item).filter_by(giveaway_id=giveaway.id, is_won=False).all()
+                
+                if not items:
+                    self.logger.info(f"All items won in giveaway '{giveaway.title}'")
+                    await channel.send(f"All items in giveaway '{giveaway.title}' have been won!")
+                    break
+                
+                for item in items:
+                    try:
+                        # Announce the item
+                        self.logger.info(f"Announcing item: {item.name}")
+                        await channel.send(f"Giving away: {item.name}!")
+                        
+                        # Wait for entries
+                        await asyncio.sleep(giveaway.frequency)
+                        
+                        # Select winner if there are entries
+                        if giveaway_data['entries']:
+                            winner = random.choice(giveaway_data['entries'])
+                            item.is_won = True
+                            item.winner_username = winner
+                            db_session.commit()
+                            
+                            self.logger.info(f"Winner selected: {winner} for item {item.name}")
+                            await channel.send(f"Congratulations {winner}! You've won {item.name}!")
+                            
+                            giveaway_data['entries'].clear()  # Clear entries after a win
+                            giveaway_data['empty_rounds'] = 0  # Reset empty rounds counter
+                        else:
+                            giveaway_data['empty_rounds'] += 1
+                            self.logger.info(f"No entries for {item.name}. Empty rounds: {giveaway_data['empty_rounds']}/{giveaway.threshold}")
+                            
+                            if giveaway_data['empty_rounds'] >= giveaway.threshold:
+                                await channel.send(
+                                    f"No entries for {giveaway_data['empty_rounds']} consecutive rounds. "
+                                    f"Giveaway '{giveaway.title}' has been automatically ended."
+                                )
+                                # Clean up the giveaway in the database
+                                active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
+                                if active_giveaway:
+                                    db_session.delete(active_giveaway)
+                                    db_session.commit()
+                                return  # End the giveaway
+                            else:
+                                await channel.send(
+                                    f"No entries for {item.name}. It will be re-given in the next round. "
+                                    f"({giveaway_data['empty_rounds']}/{giveaway.threshold} empty rounds)"
+                                )
+                    
+                    except Exception as e:
+                        self.logger.error(f"Error processing item '{item.name}': {e}")
+            
+        except Exception as e:
+            self.logger.error(f"Error managing giveaway {giveaway_id}: {e}")
+        finally:
+            try:
+                # Clean up the giveaway in the database
+                active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
+                if active_giveaway:
+                    db_session.delete(active_giveaway)
+                    db_session.commit()
+            except Exception as e:
+                self.logger.error(f"Error cleaning up giveaway {giveaway_id}: {e}")
             finally:
                 db_session.close()
+                # Clean up when giveaway ends
+                if giveaway_id in self.giveaways:
+                    del self.giveaways[giveaway_id]
+                self.logger.info(f"Giveaway {giveaway_id} cleanup completed")
+
+    @commands.command(name="enter")
+    async def enter_giveaway(self, ctx):
+        """Handle !enter command for any active giveaway in the channel."""
+        channel_name = ctx.channel.name
+        for giveaway_id, data in self.giveaways.items():
+            if data['channel_name'] == channel_name:
+                if ctx.author.name not in data['entries']:
+                    data['entries'].append(ctx.author.name)
+                    await ctx.send(f"{ctx.author.name}, you have been entered into the giveaway!")
+                else:
+                    await ctx.send(f"{ctx.author.name}, you are already entered!")
+                return
+        
+        await ctx.send("There is no active giveaway in this channel.")
 
     async def event_message(self, message):
         if message.author is None:
@@ -209,7 +506,7 @@ class Bot(commands.Bot):
 
     @commands.command(name="startgiveaway")
     async def start_giveaway(self, ctx, identifier: str = None):
-        if self.active_giveaway:
+        if self.giveaways.get(int(identifier)):
             await ctx.send("A giveaway is already active!")
             return
 
@@ -225,67 +522,30 @@ class Bot(commands.Bot):
             await ctx.send("Invalid giveaway ID provided.")
             return
 
-        self.active_giveaway = giveaway
-        self.entries = []
-        self.empty_rounds = 0  # Reset empty rounds counter when starting a new giveaway
+        self.giveaways[int(identifier)] = {
+            'giveaway': giveaway,
+            'entries': [],
+            'empty_rounds': 0,
+            'task': None
+        }
+        self.giveaways[int(identifier)]['task'] = asyncio.create_task(self.manage_giveaway(int(identifier)))
         print(f"Starting giveaway: {giveaway.title} with threshold: {giveaway.threshold}")
         await ctx.send(f"A giveaway has started: {giveaway.title}! Type !enter to participate.")
-        self.giveaway_task = asyncio.create_task(self.manage_giveaways(ctx, giveaway))
-
-    @commands.command(name="enter")
-    async def enter_giveaway(self, ctx):
-        if not self.giveaway_id:
-            await ctx.send("There is no active giveaway to join.")
-            return
-
-        db_session = SessionLocal()
-        try:
-            # Check if this is the active process for this giveaway
-            active = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
-            if not active:
-                await ctx.send("There is no active giveaway to join.")
-                return
-            
-            # Only the process with the matching process_id should respond to entries
-            if active.process_id != self.process_id:
-                self.logger.info(f"Ignoring entry from {ctx.author.name} as this is not the active process for giveaway {self.giveaway_id}")
-                return
-
-            with lock:
-                if ctx.author.name not in self.entries:
-                    self.entries.append(ctx.author.name)
-                    self.logger.info(f"{ctx.author.name} entered the giveaway. Current entries: {self.entries}")
-                    await ctx.send(f"{ctx.author.name}, you have been entered into the giveaway!")
-                else:
-                    self.logger.info(f"{ctx.author.name} is already in the giveaway. Current entries: {self.entries}")
-                    await ctx.send(f"{ctx.author.name}, you are already entered!")
-        finally:
-            db_session.close()
 
     @commands.command(name="endgiveaway")
     async def end_giveaway(self, ctx):
-        if not self.active_giveaway:
-            await ctx.send("There is no active giveaway to end.")
+        if not self.giveaways:
+            await ctx.send("There are no active giveaways to end.")
             return
 
-        if self.giveaway_task:
-            self.giveaway_task.cancel()
-            print("Giveaway task canceled.")
-            try:
-                await self.giveaway_task
-            except asyncio.CancelledError:
-                print("Giveaway task cleanup completed.")
-
-        with lock:
-            if self.entries:
-                winner = random.choice(self.entries)
-                await ctx.send(f"The giveaway '{self.active_giveaway.title}' has ended! Congratulations to {winner}!")
-            else:
-                await ctx.send(f"The giveaway '{self.active_giveaway.title}' has ended with no participants.")
-
-        self.active_giveaway = None
-        self.entries = []
-        self.empty_rounds = 0  # Reset empty rounds counter when ending a giveaway manually
+        for giveaway_id, data in self.giveaways.items():
+            if data['task']:
+                data['task'].cancel()
+                print(f"Giveaway {giveaway_id} task canceled.")
+                try:
+                    await data['task']
+                except asyncio.CancelledError:
+                    print(f"Giveaway {giveaway_id} task cleanup completed.")
 
         await ctx.send("Shutting down the giveaway bot. Thank you for participating!")
         print("Initiating bot shutdown...")
@@ -311,152 +571,29 @@ class Bot(commands.Bot):
         giveaway_list = ", ".join([f"ID #{g.id}: {g.title}" for g in giveaways])
         await ctx.send(f"Your giveaways: {giveaway_list}")
 
-    async def manage_giveaways(self, ctx, giveaway):
-        try:
-            self.logger.info(f"Managing giveaway: {giveaway.title}")
-            self.logger.info(f"Giveaway details - ID: {giveaway.id}, Frequency: {giveaway.frequency}, Threshold: {giveaway.threshold}")
-            
-            db_session = SessionLocal()
-            items = db_session.query(Item).filter_by(giveaway_id=giveaway.id, is_won=False).all()
-            self.logger.info(f"Fetched items: {items}")
-
-            if not items:
-                self.logger.info(f"No items found for giveaway '{giveaway.title}'. Ending giveaway.")
-                if self.connected_channels:
-                    try:
-                        channel = self.get_channel(self.connected_channels[0])
-                        if channel:
-                            await channel.send(
-                                f"No items are available for giveaway '{giveaway.title}'. The giveaway cannot proceed."
-                            )
-                        else:
-                            self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
-                    except Exception as e:
-                        self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                return
-
-            for item in items:
-                self.logger.debug(f"Processing item: {item.name} (ID: {item.id})")
-
-                try:
-                    message = f"Giving away: {item.name}!"
-                    if self.connected_channels:
-                        try:
-                            channel = self.get_channel(self.connected_channels[0])
-                            if channel:
-                                await channel.send(message)
-                            else:
-                                self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
-                        except Exception as e:
-                            self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                    else:
-                        self.logger.warning(f"Connected channels not found. Skipping message: {message}")
-
-                    await asyncio.sleep(giveaway.frequency)
-
-                    with lock:
-                        if self.entries:
-                            winner_name = random.choice(self.entries)
-                            self.logger.info(f"Selected winner: {winner_name}")
-
-                            winner = db_session.query(User).filter_by(username=winner_name).first()
-
-                            item.is_won = True
-                            if winner:
-                                item.winner_id = winner.id  
-                            item.winner_username = winner_name 
-                            db_session.commit()
-
-                            if self.connected_channels:
-                                try:
-                                    channel = self.get_channel(self.connected_channels[0])
-                                    if channel:
-                                        await channel.send(
-                                            f"Congratulations {winner_name}! You've won {item.name}!"
-                                        )
-                                    else:
-                                        self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
-                                except Exception as e:
-                                    self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                            self.entries.remove(winner_name)
-                        else:
-                            self.logger.info(f"No entries found for item: {item.name}")
-                            self.empty_rounds += 1  # Increment empty rounds counter
-                            self.logger.info(f"Empty rounds: {self.empty_rounds}/{giveaway.threshold}")
-                            
-                            if self.empty_rounds >= giveaway.threshold:
-                                self.logger.info(f"THRESHOLD REACHED: {self.empty_rounds} empty rounds >= threshold of {giveaway.threshold}")
-                                if self.connected_channels:
-                                    try:
-                                        channel = self.get_channel(self.connected_channels[0])
-                                        if channel:
-                                            await channel.send(
-                                                f"No entries for {self.empty_rounds} consecutive rounds. Giveaway '{giveaway.title}' has been automatically ended."
-                                            )
-                                        else:
-                                            self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
-                                    except Exception as e:
-                                        self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                                self.logger.info(f"Ending giveaway '{giveaway.title}' due to {self.empty_rounds} empty rounds")
-                                break  # Exit the loop to end the giveaway
-                            else:
-                                self.logger.info(f"Threshold not yet reached: {self.empty_rounds} empty rounds < threshold of {giveaway.threshold}")
-                            
-                            if self.connected_channels:
-                                try:
-                                    channel = self.get_channel(self.connected_channels[0])
-                                    if channel:
-                                        await channel.send(
-                                            f"No entries for {item.name}. It will be re-given in the next round. ({self.empty_rounds}/{giveaway.threshold} empty rounds)"
-                                        )
-                                    else:
-                                        self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
-                                except Exception as e:
-                                    self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-                except Exception as e:
-                    self.logger.error(f"Error processing item '{item.name}': {e}")
-
-            self.logger.info(f"Giveaway '{giveaway.title}' concluded.")
-            if self.connected_channels:
-                try:
-                    channel = self.get_channel(self.connected_channels[0])
-                    if channel:
-                        await channel.send(
-                            f"The giveaway '{giveaway.title}' has ended. Thank you for participating!"
-                        )
-                    else:
-                        self.logger.warning(f"Channel object for '{self.connected_channels[0]}' not found. Skipping message.")
-                except Exception as e:
-                    self.logger.error(f"Error sending message to channel '{self.connected_channels[0]}': {e}")
-            self.active_giveaway = None
-
-        except Exception as e:
-            self.logger.error(f"Error in managing giveaway: {e}")
-        finally:
-            db_session.close()
-            await self.shutdown()
-
     async def shutdown(self):
         """Clean up when the bot shuts down."""
         self.logger.info("Initiating bot shutdown...")
         try:
             db_session = SessionLocal()
             # Mark process tracker as inactive
-            tracker = db_session.query(ProcessTracker).filter_by(
-                process_id=self.process_id,
-                giveaway_id=self.giveaway_id
-            ).first()
-            if tracker:
-                tracker.is_active = False
-                db_session.commit()
-                self.logger.info(f"Marked process tracker {self.process_id} as inactive")
+            for giveaway_id in self.giveaways.keys():
+                tracker = db_session.query(ProcessTracker).filter_by(
+                    process_id=self.process_id,
+                    giveaway_id=giveaway_id
+                ).first()
+                if tracker:
+                    tracker.is_active = False
+                    db_session.commit()
+                    self.logger.info(f"Marked process tracker {self.process_id} as inactive for giveaway {giveaway_id}")
 
-            # Remove active giveaway record
-            active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=self.giveaway_id).first()
-            if active_giveaway:
-                db_session.delete(active_giveaway)
-                db_session.commit()
-                self.logger.info(f"Removed active giveaway record for giveaway {self.giveaway_id}")
+            # Remove active giveaway records
+            for giveaway_id in self.giveaways.keys():
+                active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
+                if active_giveaway:
+                    db_session.delete(active_giveaway)
+                    db_session.commit()
+                    self.logger.info(f"Removed active giveaway record for giveaway {giveaway_id}")
             db_session.close()
         except Exception as e:
             self.logger.error(f"Error during shutdown cleanup: {e}")
@@ -469,13 +606,6 @@ class Bot(commands.Bot):
                 except asyncio.CancelledError:
                     pass
             
-            if self.giveaway_task and not self.giveaway_task.done():
-                self.giveaway_task.cancel()
-                try:
-                    await self.giveaway_task
-                except asyncio.CancelledError:
-                    pass
-            
             # Close the bot connection instead of calling super().shutdown()
             self.logger.info("Closing bot connection...")
             await self.close()
@@ -483,28 +613,24 @@ class Bot(commands.Bot):
 
 
 if __name__ == "__main__":
-    giveaway_id = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    channel_name = sys.argv[2] if len(sys.argv) > 2 else None
+    # Start the Flask server
+    logger.info("Starting Flask server...")
+    threading.Thread(target=serve, args=(app,), kwargs={
+        'host': '0.0.0.0',
+        'port': 5001,
+        'threads': 4
+    }, daemon=True).start()
+    logger.info("Flask server started")
     
-    if channel_name:
-        print(f"Starting bot in channel: {channel_name}")
-    else:
-        print(f"No channel specified, using default channel: {CHANNEL}")
-    
-    bot = Bot(giveaway_id=giveaway_id, channel_name=channel_name)
-    
-    # Set up signal handlers for graceful shutdown
-    import signal
-    
-    def signal_handler(sig, frame):
-        print(f"Received signal {sig}, shutting down...")
+    # Create and run the bot
+    logger.info("Creating bot instance...")
+    bot = Bot()
+    try:
+        logger.info("Starting bot...")
+        bot.run()
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
         asyncio.create_task(bot.shutdown())
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Start Flask server in a separate thread using waitress
-    threading.Thread(target=serve, args=(app,), kwargs={"host": "0.0.0.0", "port": 5001}, daemon=True).start()
-    
-    # Run the bot
-    bot.run()
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        asyncio.create_task(bot.shutdown())
