@@ -15,6 +15,7 @@ from flask_session import Session
 import requests
 from functools import wraps
 import time
+from sqlalchemy import text
 
 # Load environment variables
 load_dotenv()
@@ -76,7 +77,31 @@ def require_twitch_auth(f):
 
 @app.route('/wake')
 def wake():
-    return "I'm awake!", 200
+    """Wake endpoint that also provides basic status information."""
+    try:
+        # Check if bot is ready
+        if not bot or not bot.is_ready:
+            return "Bot is starting up...", 503
+        
+        # Check if we can access the database
+        db_session = SessionLocal()
+        try:
+            # Simple query to test database connection using text()
+            db_session.execute(text("SELECT 1"))
+            db_session.close()
+        except Exception as e:
+            logger.error(f"Database connection test failed: {e}")
+            return "Database connection error", 503
+        
+        return jsonify({
+            "status": "awake",
+            "ready": bot.is_ready,
+            "connected_channels": bot.connected_channels,
+            "active_giveaways": len(bot.giveaways)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error in wake endpoint: {e}")
+        return "Internal server error", 500
 
 @app.route('/')
 @require_twitch_auth

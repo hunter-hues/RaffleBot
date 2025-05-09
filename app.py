@@ -15,6 +15,7 @@ from logging.handlers import RotatingFileHandler
 import re
 import threading
 import time
+from functools import wraps
 
 # Load environment variables
 load_dotenv()
@@ -215,7 +216,48 @@ def auth_twitch_callback():
 
     return redirect("/dashboard")
 
+def wake_chatbot(max_retries=3, retry_delay=2):
+    """
+    Attempts to wake up the chatbot service with retries.
+    Returns True if successful, False otherwise.
+    """
+    chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(f'{chatbot_url}/wake', timeout=5)
+            if response.status_code == 200:
+                logger.info("Successfully woke up chatbot service")
+                return True
+            elif response.status_code == 503:
+                # Bot is starting up, wait longer and try again
+                logger.info("Chatbot is starting up, waiting...")
+                time.sleep(retry_delay * 2)  # Wait longer for startup
+                continue
+        except requests.RequestException as e:
+            logger.warning(f"Attempt {attempt + 1}/{max_retries} to wake chatbot failed: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+    logger.error("Failed to wake up chatbot service after all retries")
+    return False
+
+def ensure_chatbot_running(f):
+    """
+    Decorator to ensure chatbot is running before executing the route.
+    If chatbot is not running, attempts to wake it up.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not wake_chatbot():
+            return render_template(
+                "error.html",
+                message="Chatbot service is currently starting up. Please try again in a few moments.",
+                retry_after=10
+            ), 503
+        return f(*args, **kwargs)
+    return decorated_function
+
 @app.route("/dashboard")
+@ensure_chatbot_running
 def dashboard():
     user_id = session.get("user_id")
     if not user_id:
@@ -357,6 +399,7 @@ def delete_giveaway(id):
     return redirect("/dashboard")
 
 @app.route("/giveaway/start/<int:giveaway_id>")
+@ensure_chatbot_running
 def start_giveaway(giveaway_id):
     user_id = session.get("user_id")
     if not user_id:
