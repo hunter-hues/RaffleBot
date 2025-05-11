@@ -7,7 +7,8 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 
-load_dotenv()
+# Load production environment
+load_dotenv('.env.production')
 
 # Get database URL from environment, fallback to SQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///giveaway.db")

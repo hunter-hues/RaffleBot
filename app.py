@@ -415,7 +415,7 @@ def start_giveaway(giveaway_id):
         # Check if giveaway is already running
         active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
         if active_giveaway:
-            return "This giveaway is already running.", 400
+                return "This giveaway is already running.", 400
 
         # Get the creator's username to use as the channel name
         creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
@@ -590,7 +590,7 @@ def stop_giveaway(giveaway_id):
         active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
         if not active_giveaway:
             return "This giveaway is not running.", 400
-
+        
         # Remove the active giveaway record
         db_session.delete(active_giveaway)
         db_session.commit()
