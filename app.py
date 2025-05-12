@@ -95,6 +95,7 @@ limiter = Limiter(
 @limiter.limit(os.getenv('RATE_LIMIT_AUTH', '5/minute'))
 @app.route("/auth/twitch")
 def auth_twitch():
+    logger.info(f"WEB APP AUTH_TWITCH: Using REDIRECT_URI: {REDIRECT_URI}")
     return redirect(
         f"https://id.twitch.tv/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=user:read:email"
     )
@@ -270,12 +271,13 @@ def dashboard():
         giveaways = db_session.query(Giveaway).filter_by(creator_id=user_id).all()
         
         # For each giveaway, check if it's running by querying the chatbot's status endpoint
+        chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
         for giveaway in giveaways:
             active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway.id).first()
             if active_giveaway:
                 try:
                     # Try to get status from the chatbot
-                    response = requests.get(f'http://localhost:5001/status', timeout=1)
+                    response = requests.get(f'{chatbot_url}/status', timeout=1)
                     if response.status_code == 200:
                         status_data = response.json()
                         # Check if this giveaway is in the active giveaways list
@@ -425,9 +427,10 @@ def start_giveaway(giveaway_id):
         
         channel_name = creator.channel_name or creator.username.lower()
 
-        # Check if chatbot is running
+        # Check if chatbot is running - use environment variable for URL
+        chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
         try:
-            response = requests.get('http://localhost:5001/wake', timeout=1)
+            response = requests.get(f'{chatbot_url}/wake', timeout=1)
             if response.status_code != 200:
                 return "Chatbot is not running. Please start chatbot.py first.", 503
         except requests.RequestException:
