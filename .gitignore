@@ -78,3 +78,4 @@ flask_session/
 *.bak
 *.swp
 *~
+.env copy
