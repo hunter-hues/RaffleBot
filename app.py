@@ -218,43 +218,48 @@ def auth_twitch_callback():
 
     return redirect("/dashboard")
 
-def wake_chatbot(max_retries=3, retry_delay=2):
-    """
-    Attempts to wake up the chatbot service with retries.
-    Returns True if successful, False otherwise.
-    """
+def wake_chatbot(max_retries=6, retry_delay=8):
     chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+    
+    # First, make an initial request to trigger Render to spin up the service
+    try:
+        logger.info(f"Sending initial wake request to {chatbot_url}")
+        initial_response = requests.get(f'{chatbot_url}', timeout=5)
+        logger.info(f"Initial wake response: {initial_response.status_code}")
+    except requests.RequestException as e:
+        logger.info(f"Initial wake request expected to fail during cold start: {str(e)}")
+    
+    # Now try multiple times with increasing delays
     for attempt in range(max_retries):
         try:
-            response = requests.get(f'{chatbot_url}/wake', timeout=5)
+            # Increase timeout for subsequent attempts
+            timeout = 10 + (attempt * 5)
+            logger.info(f"Wake attempt {attempt + 1}/{max_retries} with timeout {timeout}s")
+            
+            response = requests.get(f'{chatbot_url}/wake', timeout=timeout)
             if response.status_code == 200:
-                logger.info("Successfully woke up chatbot service")
+                logger.info("Successfully sent wake request")
                 return True
-            elif response.status_code == 503:
-                # Bot is starting up, wait longer and try again
-                logger.info("Chatbot is starting up, waiting...")
-                time.sleep(retry_delay * 2)  # Wait longer for startup
-                continue
         except requests.RequestException as e:
             logger.warning(f"Attempt {attempt + 1}/{max_retries} to wake chatbot failed: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
+        
+        # Wait longer between each retry
+        wait_time = retry_delay * (attempt + 1)
+        logger.info(f"Waiting {wait_time}s before next retry...")
+        time.sleep(wait_time)
+    
     logger.error("Failed to wake up chatbot service after all retries")
     return False
 
 def ensure_chatbot_running(f):
-    """
-    Decorator to ensure chatbot is running before executing the route.
-    If chatbot is not running, attempts to wake it up.
-    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not wake_chatbot():
             return render_template(
                 "error.html",
-                message="Chatbot service is currently starting up. Please try again in a few moments.",
-                retry_after=10
-            ), 503
+                message="Chatbot service is currently starting up. Render's free tier can take up to 50 seconds to initialize after inactivity. Please wait while the service starts...",
+                retry_after=20
+            ), 202  # 202 Accepted indicates the request is processing
         return f(*args, **kwargs)
     return decorated_function
 
@@ -669,7 +674,6 @@ def settings():
 
 # Function to clean up stale processes
 def cleanup_stale_processes():
-    """Periodically clean up stale processes and process trackers."""
     while True:
         try:
             db_session = SessionLocal()

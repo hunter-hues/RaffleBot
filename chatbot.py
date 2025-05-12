@@ -80,9 +80,12 @@ def require_twitch_auth(f):
 def wake():
     """Wake endpoint that also provides basic status information."""
     try:
-        # Check if bot is ready
+        # Always return 200 status code to indicate service is up, even during startup
         if not bot or not bot.is_ready:
-            return "Bot is starting up...", 503
+            return jsonify({
+                "status": "starting",
+                "message": "Bot is initializing"
+            }), 200
         
         # Check if we can access the database
         db_session = SessionLocal()
@@ -92,7 +95,10 @@ def wake():
             db_session.close()
         except Exception as e:
             logger.error(f"Database connection test failed: {e}")
-            return "Database connection error", 503
+            return jsonify({
+                "status": "error",
+                "message": "Database connection error"
+            }), 200  # Still return 200 to indicate service is up
         
         return jsonify({
             "status": "awake",
@@ -102,7 +108,10 @@ def wake():
         }), 200
     except Exception as e:
         logger.error(f"Error in wake endpoint: {e}")
-        return "Internal server error", 500
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error"
+        }), 200  # Return 200 even on errors so we know the service is running
 
 @app.route('/')
 @require_twitch_auth
