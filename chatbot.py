@@ -17,8 +17,9 @@ from functools import wraps
 import time
 from sqlalchemy import text
 
-# Load environment variables
-load_dotenv()
+# Load environment variables only in development
+if os.getenv('FLASK_ENV') != 'production':
+    load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -150,6 +151,7 @@ def status_api():
 
 @app.route('/auth/twitch')
 def auth_twitch():
+    logger.info(f"AUTH TWITCH: Using REDIRECT_URI: {REDIRECT_URI}")
     return redirect(
         f"https://id.twitch.tv/oauth2/authorize"
         f"?client_id={CLIENT_ID}"

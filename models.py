@@ -7,8 +7,14 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 
-# Load production environment
-load_dotenv('.env.production')
+# Only load environment variables from .env files if we're not in a production environment
+# This ensures Render's environment variables take precedence
+if os.getenv('FLASK_ENV') != 'production':
+    try:
+        load_dotenv('.env.production')
+    except:
+        # If production env file doesn't exist, load default
+        load_dotenv()
 
 # Get database URL from environment, fallback to SQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///giveaway.db")

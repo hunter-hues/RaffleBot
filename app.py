@@ -17,8 +17,9 @@ import threading
 import time
 from functools import wraps
 
-# Load environment variables
-load_dotenv()
+# Load environment variables only in development
+if os.getenv('FLASK_ENV') != 'production':
+    load_dotenv()
 
 # Configure logging
 def setup_logging():
