@@ -103,6 +103,25 @@
             font-size: 0.8em;
             margin-top: 10px;
         }
+        .return-button {
+            display: block;
+            margin: 20px auto;
+            background-color: #6a0dad;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            text-decoration: none;
+            max-width: 300px;
+            transition: background-color 0.2s;
+        }
+        .return-button:hover {
+            background-color: #8b00ff;
+        }
     </style>
 </head>
 <body>
@@ -126,6 +145,7 @@
             <div id="giveaway-list" class="giveaway-list">
                 <!-- Giveaway cards will be inserted here -->
             </div>
+            <a href="{{ main_app_url|default(request.args.get('return_to', 'https://rafflebot-site.onrender.com')) }}" class="return-button">Return to Main Application</a>
         </div>
     </div>
 

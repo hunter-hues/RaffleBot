@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from functools import wraps
+import urllib.parse
 
 # Load environment variables only in development
 if os.getenv('FLASK_ENV') != 'production':
@@ -223,26 +224,21 @@ def ensure_chatbot_running(f):
     def decorated_function(*args, **kwargs):
         chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
         
-        # First, make an initial request to trigger Render to spin up the service
-        try:
-            logger.info(f"Sending initial wake request to {chatbot_url}")
-            initial_response = requests.get(f'{chatbot_url}', timeout=5)
-            logger.info(f"Initial wake response: {initial_response.status_code}")
-            
-            # If we get a successful response right away, continue
-            if initial_response.status_code == 200:
-                return f(*args, **kwargs)
-        except requests.RequestException as e:
-            logger.info(f"Initial wake request expected to fail during cold start: {str(e)}")
+        # Store the requested URL to redirect back after chatbot wakes up
+        current_url = request.url
         
-        # Instead of making multiple retry attempts with increasing timeouts that block the request,
-        # we'll immediately serve a page that instructs the user to wait and auto-refreshes
-        return render_template(
-            "error.html",
-            message="Chatbot service is currently starting up. Render's free tier can take up to 50 seconds to initialize after inactivity. Please wait while the service starts...",
-            retry_after=10,  # Check again in 10 seconds
-            chatbot_url=chatbot_url
-        ), 202  # 202 Accepted indicates the request is processing
+        # URL encode the current URL to prevent issues with special characters
+        encoded_url = urllib.parse.quote(current_url)
+        
+        # We redirect to the chatbot service to wake it up.
+        # The Flask server at the chatbot will start immediately, but the Twitch bot
+        # might take a few moments to fully initialize and connect to Twitch.
+        # The chatbot will check if the bot is ready and redirect back once it's ready.
+        wake_redirect_url = f"{chatbot_url}/wake_redirect?return_to={encoded_url}"
+        logger.info(f"Redirecting to wake up Twitch bot: {wake_redirect_url}")
+        
+        return redirect(wake_redirect_url)
+        
     return decorated_function
 
 @app.route("/dashboard")

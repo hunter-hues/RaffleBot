@@ -112,10 +112,48 @@ def wake():
             "message": "Internal server error"
         }), 200  # Return 200 even on errors so we know the service is running
 
+@app.route('/wake_redirect')
+def wake_redirect():
+    # Get the return URL from query parameter first, then from session, then use default
+    return_to = request.args.get('return_to')
+    if not return_to and 'return_to' in session:
+        return_to = session.get('return_to')
+        # Clear it from session once used
+        session.pop('return_to')
+    
+    # If still not set, use the default
+    if not return_to:
+        return_to = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
+    
+    # Store for potential auth flow
+    session['return_to'] = return_to
+    
+    # Check bot status
+    bot_status = "initializing"
+    if bot:
+        if bot.is_ready:
+            bot_status = "ready"
+        else:
+            bot_status = "starting"
+    
+    # Log the current status
+    logger.info(f"Bot status: {bot_status}, Return URL: {return_to}")
+    
+    # If the bot is ready, redirect back to the main app
+    if bot and bot.is_ready:
+        logger.info(f"Bot is ready, redirecting back to: {return_to}")
+        return redirect(return_to)
+    
+    # Otherwise, show the wake-up page with auto-refresh
+    # At this point, the server is running but the bot is still initializing
+    return render_template('wake_page.html', return_to=return_to)
+
 @app.route('/')
 @require_twitch_auth
 def status_page():
-    return render_template('chatbot_status.html')
+    # Get return_to parameter from query string, or use environment variable
+    main_app_url = request.args.get('return_to', os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com'))
+    return render_template('chatbot_status.html', main_app_url=main_app_url)
 
 @app.route('/status')
 def status_api():
@@ -158,6 +196,12 @@ def status_api():
 
 @app.route('/auth/twitch')
 def auth_twitch():
+    # Store the return_to parameter in the session 
+    return_to = request.args.get('return_to', '')
+    if return_to:
+        session['return_to'] = return_to
+        logger.info(f"Stored return_to in session: {return_to}")
+    
     logger.info(f"AUTH TWITCH: Using REDIRECT_URI: {REDIRECT_URI}")
     return redirect(
         f"https://id.twitch.tv/oauth2/authorize"
@@ -218,13 +262,16 @@ def auth_twitch_callback():
             app_url = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
             logger.info(f"Using main application URL from environment: {app_url}")
             
-            # Redirect to the main app's home page instead of passing the code
-            # (which won't work because the code would be used twice)
-            redirect_url = app_url
-            logger.info(f"Redirecting to main app home: {redirect_url}")
+            # Get the return_to from session if available, otherwise use default URL
+            return_to = session.get('return_to', app_url)
+            logger.info(f"Redirecting to: {return_to}")
             
-            # Use the redirect template 
-            return render_template('redirect.html', redirect_url=redirect_url)
+            # Clear the return_to from session
+            if 'return_to' in session:
+                session.pop('return_to')
+            
+            # Use the redirect template
+            return render_template('redirect.html', redirect_url=return_to)
 
         session["user_id"] = user_info["id"]
         session["username"] = user_info["display_name"]
