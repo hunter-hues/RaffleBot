@@ -225,37 +225,51 @@ def dashboard():
     if not user_id:
         return redirect("/auth/twitch")
 
-    # First authenticate user, then redirect to chatbot site to wake it up
+    # Always check if the chatbot is awake - don't rely on any parameters or session state
     chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
-    
-    # Get the current app's URL to redirect back to after visiting the chatbot
     main_app_url = os.getenv('MAIN_APP_URL', request.host_url.rstrip('/'))
     dashboard_url = f"{main_app_url}/dashboard_view"
     encoded_url = urllib.parse.quote(dashboard_url)
     
-    # Check if user is coming back from the chatbot or has already visited it in this session
-    if request.args.get('from_chatbot') == 'true':
-        # Mark that they've visited the chatbot in this session
-        session['visited_chatbot'] = True
-        # Show the dashboard
-        return dashboard_view()
+    # Check chatbot status
+    try:
+        # Try to ping the chatbot's wake endpoint
+        response = requests.get(f"{chatbot_url}/wake", timeout=3)
+        if response.status_code == 200:
+            response_data = response.json()
+            # If chatbot is fully awake, show the dashboard
+            if response_data.get('status') == 'awake' and response_data.get('ready', False):
+                logger.info("Chatbot is awake, showing dashboard")
+                return dashboard_view()
+        
+        logger.info(f"Chatbot not fully awake. Status code: {response.status_code}, Response: {response_data if response.status_code == 200 else 'N/A'}")
+    except requests.RequestException as e:
+        # If we can't reach the chatbot, we should redirect to wake it up
+        logger.info(f"Failed to reach chatbot: {str(e)}")
     
-    # Check if they've already visited the chatbot in this session
-    if session.get('visited_chatbot'):
-        # They've already been to the chatbot in this session, show the dashboard
-        return dashboard_view()
-    
-    # They need to visit the chatbot first
-    # Redirect to the chatbot site, which will redirect back to dashboard_view
+    # Need to redirect to chatbot to wake it up
     redirect_url = f"{chatbot_url}/?return_to={encoded_url}"
     logger.info(f"Redirecting user to chatbot to wake it up: {redirect_url}")
-    return redirect(redirect_url)
+    return render_template('chatbot_redirect.html', redirect_url=redirect_url)
 
 @app.route("/dashboard_view")
 def dashboard_view():
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
+
+    # Always check if the chatbot is awake before showing the dashboard
+    chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+    try:
+        response = requests.get(f"{chatbot_url}/wake", timeout=2)
+        if response.status_code != 200 or not response.json().get('ready', False):
+            # Chatbot is not awake, redirect through the dashboard flow
+            logger.info("Chatbot not ready when accessing dashboard view, redirecting")
+            return redirect("/dashboard")  # This will check and redirect to chatbot if needed
+    except requests.RequestException:
+        # Could not reach chatbot, redirect through regular flow
+        logger.info("Could not reach chatbot when accessing dashboard view, redirecting")
+        return redirect("/dashboard")
 
     db_session = SessionLocal()
     try:
@@ -381,20 +395,25 @@ def start_giveaway(giveaway_id):
         if response.status_code != 200:
             # Chatbot not responding correctly, redirect to wake it up
             logger.warning(f"Chatbot service responded with non-200 status code: {response.status_code}")
+            logger.info(f"Redirecting user to chatbot site to wake it up")
             return redirect_to_chatbot(f"/giveaway/start/{giveaway_id}")
         
         # Even with 200 status, check if it's actually ready
         response_data = response.json()
         if response_data.get('status') != 'awake' or not response_data.get('ready', False):
             logger.warning(f"Chatbot service is up but not ready: {response_data}")
+            logger.info(f"Redirecting user to chatbot site to wake it up fully")
             return redirect_to_chatbot(f"/giveaway/start/{giveaway_id}")
             
     except requests.RequestException as e:
         # Chatbot not responding at all, redirect to wake it up
         logger.warning(f"Chatbot service not responding: {str(e)}")
+        logger.info(f"Redirecting user to chatbot site to wake it up")
         return redirect_to_chatbot(f"/giveaway/start/{giveaway_id}")
 
     # If we get here, the chatbot is responsive, continue with starting the giveaway
+    logger.info(f"Chatbot is responsive, proceeding to start giveaway {giveaway_id}")
+    
     db_session = SessionLocal()
     try:
         # Check if giveaway exists and user has permission
@@ -423,8 +442,9 @@ def start_giveaway(giveaway_id):
         )
         db_session.add(active_giveaway)
         db_session.commit()
+        logger.info(f"Successfully started giveaway {giveaway_id}")
         
-        return redirect("/dashboard_view?from_chatbot=true")
+        return redirect("/dashboard_view")
 
     except Exception as e:
         db_session.rollback()
@@ -446,11 +466,23 @@ def redirect_to_chatbot(return_path):
     redirect_url = f"{chatbot_url}/?return_to={encoded_url}"
     logger.info(f"Redirecting to chatbot to wake it up: {redirect_url}")
     
-    # Show a loading page in the main app explaining what's happening
-    return render_template('error.html', 
-                          message="The chatbot service is currently starting up. Please wait a moment.",
-                          retry_after="10", 
-                          chatbot_url=chatbot_url)
+    # Log that we're rendering the template
+    logger.info(f"Rendering chatbot_redirect.html template with redirect_url={redirect_url}")
+    
+    # Check if template exists
+    try:
+        template_path = os.path.join(app.template_folder, 'chatbot_redirect.html')
+        if not os.path.exists(template_path):
+            logger.error(f"Template file does not exist: {template_path}")
+            # Fall back to direct redirect if template is missing
+            return redirect(redirect_url)
+            
+        # Show an explanatory page before redirecting
+        return render_template('chatbot_redirect.html', redirect_url=redirect_url)
+    except Exception as e:
+        logger.error(f"Error rendering template: {str(e)}")
+        # Fall back to direct redirect
+        return redirect(redirect_url)
 
 @app.route("/giveaway/edit/<int:id>", methods=["GET", "POST"])
 def edit_giveaway(id):

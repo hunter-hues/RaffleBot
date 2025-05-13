@@ -248,23 +248,31 @@ def auth_twitch_callback():
 
         user_info = user_data["data"][0]
         
-        # If not admin user, redirect back to main app with from_chatbot parameter
+        # If not admin user, redirect back to main app
         if user_info["display_name"].lower() != "hunter_hues":
             # Use environment variable with fallback to the known URL
             app_url = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
             
             # Get the return_to from session if available, otherwise use default URL
-            return_to = session.get('return_to', app_url)
-            
-            # Add from_chatbot flag to the URL
-            if '?' in return_to:
-                redirect_url = f"{return_to}&from_chatbot=true"
-            else:
-                redirect_url = f"{return_to}?from_chatbot=true"
+            redirect_url = session.get('return_to', app_url)
                 
             logger.info(f"Non-admin user redirecting to: {redirect_url}")
             
-            return redirect(redirect_url)
+            # Check if template exists and render it
+            try:
+                template_path = os.path.join('templates', 'redirect.html')
+                if not os.path.exists(template_path):
+                    logger.error(f"Template file does not exist: {template_path}")
+                    # Fall back to direct redirect if template is missing
+                    return redirect(redirect_url)
+                
+                # Use the redirect template to explain what's happening
+                logger.info(f"Rendering redirect.html template with redirect_url={redirect_url}")
+                return render_template('redirect.html', redirect_url=redirect_url)
+            except Exception as e:
+                logger.error(f"Error rendering template: {str(e)}")
+                # Fall back to direct redirect
+                return redirect(redirect_url)
 
         # Admin user (hunter_hues)
         session["user_id"] = user_info["id"]

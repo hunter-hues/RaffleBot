@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Starting Chatbot Service</title>
-    <meta http-equiv="refresh" content="5;url={{ return_url }}">
+    <title>Redirecting to Chatbot Service</title>
+    <meta http-equiv="refresh" content="5;url={{ redirect_url }}">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -16,15 +16,15 @@
             align-items: center;
             height: 100vh;
         }
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
+        .message {
+            text-align: center;
             padding: 30px;
             background: rgba(0, 0, 0, 0.8);
             border-radius: 15px;
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
             border: 1px solid rgba(255, 255, 255, 0.4);
-            text-align: center;
+            max-width: 600px;
+            width: 90%;
         }
         h2 {
             color: #f0f0f0;
@@ -43,25 +43,10 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        .button {
-            display: inline-block;
-            background-color: #6a0dad;
-            color: white;
-            padding: 12px 24px; 
-            text-decoration: none;
-            border-radius: 25px;
-            margin-top: 20px;
-            font-weight: bold;
-            transition: background-color 0.2s;
-        }
-        .button:hover {
-            background-color: #8b00ff;
-        }
         .note {
             font-size: 14px;
             color: #dcdcdc;
             margin-top: 20px;
-            font-style: italic;
         }
         .progress-container {
             width: 100%;
@@ -76,42 +61,65 @@
             width: 0%;
             background-color: #6a0dad;
             border-radius: 5px;
-            transition: width 1s;
-            animation: progress 5s linear infinite;
+            animation: progress 5s linear forwards;
         }
         @keyframes progress {
             0% { width: 0%; }
             100% { width: 100%; }
         }
+        .manual-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #6a0dad;
+            background-color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 25px;
+            font-weight: bold;
+        }
+        .timer {
+            margin-top: 15px;
+            font-size: 16px;
+            color: #dcdcdc;
+        }
     </style>
     <script>
-        // Countdown timer
+        // Count down from 5 seconds
         let secondsLeft = 5;
         
         window.onload = function() {
             const timerElement = document.getElementById('timer');
+            const progressBar = document.getElementById('progressBar');
             
-            // Update the timer every second
+            // Update timer every second
             setInterval(function() {
                 secondsLeft--;
                 if (secondsLeft >= 0) {
                     timerElement.textContent = secondsLeft;
                 }
+                
+                // Update progress bar
+                const progress = ((5 - secondsLeft) / 5) * 100;
+                progressBar.style.width = progress + '%';
             }, 1000);
         };
     </script>
 </head>
 <body>
-    <div class="container">
-        <h2>Starting Twitch Chatbot</h2>
-        <p>The chatbot service is being started to handle your giveaway. This typically takes a few seconds.</p>
+    <div class="message">
+        <h2>Waking Up Chatbot Service</h2>
         <div class="spinner"></div>
+        <p>The chatbot service needs to be activated to support your giveaways. You are being redirected to briefly visit the chatbot service to wake it up.</p>
+        
         <div class="progress-container">
-            <div class="progress-bar"></div>
+            <div class="progress-bar" id="progressBar"></div>
         </div>
-        <p>You'll be redirected back to continue starting your giveaway in <span id="timer">5</span> seconds.</p>
-        <a href="{{ return_url }}" class="button">Return to Giveaway</a>
-        <p class="note">Note: The chatbot service runs on Render's free tier, which puts services to sleep after inactivity.</p>
+        
+        <div class="timer">Redirecting in <span id="timer">5</span> seconds...</div>
+        
+        <a href="{{ redirect_url }}" class="manual-link">Continue Now</a>
+        
+        <p class="note">Note: This application uses Render's free tier, which puts services to sleep after inactivity. You will be redirected back automatically after the chatbot service is awake.</p>
     </div>
 </body>
 </html> 
