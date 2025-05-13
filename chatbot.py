@@ -212,10 +212,17 @@ def auth_twitch_callback():
 
         user_info = user_data["data"][0]
         
-        # Instead of returning 403, redirect to main app
+        # Instead of immediate redirect, provide a page with explanation
         if user_info["display_name"].lower() != "hunter_hues":
-            app_url = os.getenv('APP_URL', 'http://localhost:5000')
-            return redirect(f"{app_url}/auth/twitch/callback?code={code}")
+            # Use environment variable with fallback to the known URL
+            app_url = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
+            logger.info(f"Using main application URL from environment: {app_url}")
+            
+            redirect_url = f"{app_url}/auth/twitch/callback?code={code}"
+            logger.info(f"Redirecting to: {redirect_url}")
+            
+            # Use the redirect template instead of inline HTML
+            return render_template('redirect.html', redirect_url=redirect_url)
 
         session["user_id"] = user_info["id"]
         session["username"] = user_info["display_name"]
