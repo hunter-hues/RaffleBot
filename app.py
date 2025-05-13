@@ -218,49 +218,47 @@ def auth_twitch_callback():
 
     return redirect("/dashboard")
 
-def wake_chatbot(max_retries=6, retry_delay=8):
-    chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
-    
-    # First, make an initial request to trigger Render to spin up the service
-    try:
-        logger.info(f"Sending initial wake request to {chatbot_url}")
-        initial_response = requests.get(f'{chatbot_url}', timeout=5)
-        logger.info(f"Initial wake response: {initial_response.status_code}")
-    except requests.RequestException as e:
-        logger.info(f"Initial wake request expected to fail during cold start: {str(e)}")
-    
-    # Now try multiple times with increasing delays
-    for attempt in range(max_retries):
-        try:
-            # Increase timeout for subsequent attempts
-            timeout = 10 + (attempt * 5)
-            logger.info(f"Wake attempt {attempt + 1}/{max_retries} with timeout {timeout}s")
-            
-            response = requests.get(f'{chatbot_url}/wake', timeout=timeout)
-            if response.status_code == 200:
-                logger.info("Successfully sent wake request")
-                return True
-        except requests.RequestException as e:
-            logger.warning(f"Attempt {attempt + 1}/{max_retries} to wake chatbot failed: {str(e)}")
-        
-        # Wait longer between each retry
-        wait_time = retry_delay * (attempt + 1)
-        logger.info(f"Waiting {wait_time}s before next retry...")
-        time.sleep(wait_time)
-    
-    logger.error("Failed to wake up chatbot service after all retries")
-    return False
-
 def ensure_chatbot_running(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not wake_chatbot():
-            return render_template(
-                "error.html",
-                message="Chatbot service is currently starting up. Render's free tier can take up to 50 seconds to initialize after inactivity. Please wait while the service starts...",
-                retry_after=20
-            ), 202  # 202 Accepted indicates the request is processing
-        return f(*args, **kwargs)
+        chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+        
+        # First, make an initial request to trigger Render to spin up the service
+        try:
+            logger.info(f"Sending initial wake request to {chatbot_url}")
+            initial_response = requests.get(f'{chatbot_url}', timeout=5)
+            logger.info(f"Initial wake response: {initial_response.status_code}")
+        except requests.RequestException as e:
+            logger.info(f"Initial wake request expected to fail during cold start: {str(e)}")
+        
+        # Now try multiple times with increasing delays
+        max_retries = 6
+        retry_delay = 8
+        for attempt in range(max_retries):
+            try:
+                # Increase timeout for subsequent attempts
+                timeout = 10 + (attempt * 5)
+                logger.info(f"Wake attempt {attempt + 1}/{max_retries} with timeout {timeout}s")
+                
+                response = requests.get(f'{chatbot_url}/wake', timeout=timeout)
+                if response.status_code == 200:
+                    logger.info("Successfully sent wake request")
+                    return f(*args, **kwargs)
+            except requests.RequestException as e:
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} to wake chatbot failed: {str(e)}")
+            
+            # Wait longer between each retry
+            wait_time = retry_delay * (attempt + 1)
+            logger.info(f"Waiting {wait_time}s before next retry...")
+            time.sleep(wait_time)
+        
+        # If we get here, we couldn't wake the chatbot
+        return render_template(
+            "error.html",
+            message="Chatbot service is currently starting up. Render's free tier can take up to 50 seconds to initialize after inactivity. Please wait while the service starts...",
+            retry_after=20,
+            chatbot_url=chatbot_url
+        ), 202  # 202 Accepted indicates the request is processing
     return decorated_function
 
 @app.route("/dashboard")
@@ -496,26 +494,6 @@ def edit_giveaway(id):
     db_session.close()
     return render_template("edit_giveaway.html", giveaway=giveaway)
 
-@app.route("/giveaway/view/<int:giveaway_id>", methods=["GET"])
-def view_giveaway(giveaway_id):
-    user_id = session.get("user_id")
-    if not user_id:
-        return redirect("/auth/twitch")
-
-    db_session = SessionLocal()
-    giveaway = db_session.query(Giveaway).filter_by(id=giveaway_id).first()
-
-    if not giveaway:
-        db_session.close()
-        return "Giveaway not found.", 404
-
-    if not giveaway.active:
-        db_session.close()
-        return "This giveaway is no longer active.", 400
-
-    db_session.close()
-    return render_template("view_giveaway.html", giveaway=giveaway)
-
 @app.route("/giveaway/add-item/<int:giveaway_id>", methods=["POST"])
 def add_item(giveaway_id):
     user_id = session.get("user_id")
@@ -635,42 +613,6 @@ def winnings():
     db_session.close()
 
     return render_template("winnings.html", winnings=winnings)
-
-@app.route("/settings", methods=["GET", "POST"])
-def settings():
-    user_id = session.get("user_id")
-    if not user_id:
-        return redirect("/auth/twitch")
-    
-    db_session = SessionLocal()
-    user = db_session.query(User).filter_by(id=user_id).first()
-    
-    if not user:
-        db_session.close()
-        return redirect("/auth/twitch")
-    
-    error_message = None
-    success_message = None
-    
-    if request.method == "POST":
-        channel_name = request.form.get("channel_name", "").strip()
-        
-        if not channel_name:
-            error_message = "Channel name cannot be empty."
-        elif not re.match(r"^[a-zA-Z0-9_]+$", channel_name):
-            error_message = "Channel name can only contain letters, numbers, and underscores."
-        else:
-            user.channel_name = channel_name
-            db_session.commit()
-            success_message = "Your channel name has been updated."
-    
-    channel_name = user.channel_name or user.username  # Default to username if no channel name set
-    db_session.close()
-    
-    return render_template("settings.html", 
-                          channel_name=channel_name, 
-                          error_message=error_message,
-                          success_message=success_message)
 
 # Function to clean up stale processes
 def cleanup_stale_processes():

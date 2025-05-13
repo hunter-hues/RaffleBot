@@ -40,7 +40,68 @@
             color: #666;
             margin-top: 15px;
         }
+        .manual-button {
+            display: none;
+            margin-top: 20px;
+        }
+        .manual-button button {
+            padding: 10px 15px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .manual-button button:hover {
+            background-color: #2980b9;
+        }
+        .timer {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #666;
+        }
     </style>
+    <script>
+        // Configuration
+        const SHOW_MANUAL_BUTTON_AFTER = 60; // show manual button after 60 seconds (1 minute)
+        
+        // Variables
+        let secondsElapsed = 0;
+        
+        // When page loads, start the timer
+        document.addEventListener('DOMContentLoaded', function() {
+            // Start timer to count seconds
+            const timerInterval = setInterval(function() {
+                secondsElapsed++;
+                updateTimerDisplay();
+                
+                // After 1 minute, show the manual button
+                if (secondsElapsed >= SHOW_MANUAL_BUTTON_AFTER) {
+                    document.getElementById('manualButton').style.display = 'block';
+                    clearInterval(timerInterval); // Stop the timer once button is shown
+                }
+            }, 1000);
+            
+            // Add click handler for manual button
+            document.getElementById('openChatbotBtn').addEventListener('click', function() {
+                const chatbotUrl = "{{ chatbot_url }}";
+                window.open(chatbotUrl, '_blank');
+            });
+        });
+        
+        // Update the timer display
+        function updateTimerDisplay() {
+            const timerElement = document.getElementById('timer');
+            const remainingTime = SHOW_MANUAL_BUTTON_AFTER - secondsElapsed;
+            
+            if (remainingTime > 0) {
+                timerElement.textContent = `Manual wake-up option available in ${remainingTime} seconds...`;
+            } else {
+                timerElement.textContent = 'Manual wake-up option now available:';
+            }
+        }
+    </script>
 </head>
 <body>
     <div class="message">
@@ -48,6 +109,10 @@
         <div class="spinner"></div>
         <p>{{ message }}</p>
         <p>This page will automatically refresh in {{ retry_after }} seconds...</p>
+        <div class="timer" id="timer">Manual wake-up option available in 60 seconds...</div>
+        <div class="manual-button" id="manualButton">
+            <button id="openChatbotBtn">Open Chatbot Service in New Tab</button>
+        </div>
         <p class="note">Note: This service currently runs on the free tier of Render, so it may take up to a minute to load.</p>
     </div>
 </body>

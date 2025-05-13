@@ -78,7 +78,6 @@ def require_twitch_auth(f):
 
 @app.route('/wake')
 def wake():
-    """Wake endpoint that also provides basic status information."""
     try:
         # Always return 200 status code to indicate service is up, even during startup
         if not bot or not bot.is_ready:
@@ -120,7 +119,6 @@ def status_page():
 
 @app.route('/status')
 def status_api():
-    """API endpoint to check the status of all active giveaways."""
     try:
         db_session = SessionLocal()
         active_giveaways = []
@@ -214,9 +212,10 @@ def auth_twitch_callback():
 
         user_info = user_data["data"][0]
         
-        # Only allow hunter_hues to access
+        # Instead of returning 403, redirect to main app
         if user_info["display_name"].lower() != "hunter_hues":
-            return "Unauthorized", 403
+            app_url = os.getenv('APP_URL', 'http://localhost:5000')
+            return redirect(f"{app_url}/auth/twitch/callback?code={code}")
 
         session["user_id"] = user_info["id"]
         session["username"] = user_info["display_name"]
@@ -278,7 +277,6 @@ class Bot(commands.Bot):
         self._nick = value
 
     async def update_heartbeat(self):
-        """Update the process heartbeat in the database."""
         while True:
             try:
                 db_session = SessionLocal()
@@ -298,7 +296,6 @@ class Bot(commands.Bot):
             await asyncio.sleep(30)  # Update every 30 seconds
 
     async def event_ready(self):
-        """Called once when the bot goes online."""
         self.logger.info(f"Bot is ready! Logged in as {self.nick}")
         self.is_ready = True
         
@@ -311,7 +308,6 @@ class Bot(commands.Bot):
         self.logger.info("Giveaway polling task started")
 
     async def join_channel_with_retry(self, channel_name, max_retries=3):
-        """Attempt to join a channel with retries."""
         channel_name = channel_name.lower()
         
         # If we're already in the channel, return True
@@ -352,19 +348,16 @@ class Bot(commands.Bot):
         return False
 
     async def event_join(self, channel, user):
-        """Called when a user joins a channel."""
         if user.name.lower() == self._nick.lower():
             self.logger.info(f"Successfully joined channel: {channel.name}")
             self._connected_channels.add(channel.name.lower())
 
     async def event_part(self, channel, user):
-        """Called when a user parts from a channel."""
         if user.name.lower() == self._nick.lower():
             self.logger.info(f"Left channel: {channel.name}")
             self._connected_channels.discard(channel.name.lower())
 
     async def poll_giveaways(self):
-        """Poll the database for active giveaways."""
         self.logger.info("Starting to poll for giveaways")
         while True:
             try:
@@ -417,7 +410,6 @@ class Bot(commands.Bot):
             await asyncio.sleep(10)  # Poll every 10 seconds
 
     async def manage_giveaway(self, giveaway_id):
-        """Manage a single giveaway."""
         try:
             giveaway_data = self.giveaways[giveaway_id]
             giveaway = giveaway_data['giveaway']
@@ -516,7 +508,6 @@ class Bot(commands.Bot):
 
     @commands.command(name="enter")
     async def enter_giveaway(self, ctx):
-        """Handle !enter command for any active giveaway in the channel."""
         channel_name = ctx.channel.name
         for giveaway_id, data in self.giveaways.items():
             if data['channel_name'] == channel_name:
@@ -608,7 +599,6 @@ class Bot(commands.Bot):
         await ctx.send(f"Your giveaways: {giveaway_list}")
 
     async def shutdown(self):
-        """Clean up when the bot shuts down."""
         self.logger.info("Initiating bot shutdown...")
         try:
             db_session = SessionLocal()
