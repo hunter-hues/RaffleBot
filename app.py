@@ -219,69 +219,40 @@ def auth_twitch_callback():
 
     return redirect("/dashboard")
 
-def ensure_chatbot_running(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
-        
-        # Check if we're in a redirect loop by looking for a flag in the query string
-        if request.args.get('chatbot_redirect_attempted') == 'true':
-            # If we've already tried redirecting, just render the error template
-            return render_template(
-                "error.html",
-                message="Chatbot service is currently unavailable. It may take up to a minute to start on Render's free tier.",
-                retry_after=10,
-                chatbot_url=chatbot_url
-            ), 202
-        
-        # Store the requested URL to redirect back after chatbot wakes up
-        current_url = request.url
-        
-        # URL encode the current URL to prevent issues with special characters
-        encoded_url = urllib.parse.quote(current_url)
-        
-        # We redirect to the chatbot service to wake it up.
-        # The Flask server at the chatbot will start immediately, but the Twitch bot
-        # might take a few moments to fully initialize and connect to Twitch.
-        # The chatbot will check if the bot is ready and redirect back once it's ready.
-        
-        # Add a flag to indicate we've attempted a redirect
-        if '?' in current_url:
-            redirect_back_url = f"{current_url}&chatbot_redirect_attempted=true"
-        else:
-            redirect_back_url = f"{current_url}?chatbot_redirect_attempted=true"
-        
-        encoded_redirect_back = urllib.parse.quote(redirect_back_url)
-        
-        # Try to make a quick check if the chatbot service is responding at all
-        try:
-            logger.info(f"Checking if chatbot service is responding at {chatbot_url}")
-            response = requests.get(f"{chatbot_url}/wake", timeout=2)
-            if response.status_code == 200:
-                logger.info("Chatbot service is responding, redirecting to wake_redirect endpoint")
-                wake_redirect_url = f"{chatbot_url}/wake_redirect?return_to={encoded_url}"
-                logger.info(f"Redirecting to wake up Twitch bot: {wake_redirect_url}")
-                return redirect(wake_redirect_url)
-            else:
-                logger.warning(f"Chatbot service responded with status {response.status_code}")
-        except requests.RequestException as e:
-            logger.warning(f"Chatbot service is not responding: {str(e)}")
-        
-        # If we get here, the chatbot service isn't responding at all
-        # Show an error page instead of redirecting in a loop
-        return render_template(
-            "error.html",
-            message="Chatbot service is starting up. Please wait a moment and refresh this page.",
-            retry_after=10,
-            chatbot_url=chatbot_url
-        ), 202
-    
-    return decorated_function
-
 @app.route("/dashboard")
-@limiter.limit("30/minute")  # Higher limit for dashboard
-@ensure_chatbot_running
 def dashboard():
+    user_id = session.get("user_id")
+    if not user_id:
+        return redirect("/auth/twitch")
+
+    # First authenticate user, then redirect to chatbot site to wake it up
+    chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+    
+    # Get the current app's URL to redirect back to after visiting the chatbot
+    main_app_url = os.getenv('MAIN_APP_URL', request.host_url.rstrip('/'))
+    dashboard_url = f"{main_app_url}/dashboard_view"
+    encoded_url = urllib.parse.quote(dashboard_url)
+    
+    # Check if user is coming back from the chatbot or has already visited it in this session
+    if request.args.get('from_chatbot') == 'true':
+        # Mark that they've visited the chatbot in this session
+        session['visited_chatbot'] = True
+        # Show the dashboard
+        return dashboard_view()
+    
+    # Check if they've already visited the chatbot in this session
+    if session.get('visited_chatbot'):
+        # They've already been to the chatbot in this session, show the dashboard
+        return dashboard_view()
+    
+    # They need to visit the chatbot first
+    # Redirect to the chatbot site, which will redirect back to dashboard_view
+    redirect_url = f"{chatbot_url}/?return_to={encoded_url}"
+    logger.info(f"Redirecting user to chatbot to wake it up: {redirect_url}")
+    return redirect(redirect_url)
+
+@app.route("/dashboard_view")
+def dashboard_view():
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
@@ -291,40 +262,14 @@ def dashboard():
         # Get user's giveaways
         giveaways = db_session.query(Giveaway).filter_by(creator_id=user_id).all()
         
-        # For each giveaway, check if it's running by querying the chatbot's status endpoint
-        chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+        # For each giveaway, check if it's running by querying the active_giveaways table
         for giveaway in giveaways:
             active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway.id).first()
-            if active_giveaway:
-                try:
-                    # Try to get status from the chatbot
-                    response = requests.get(f'{chatbot_url}/status', timeout=1)
-                    if response.status_code == 200:
-                        status_data = response.json()
-                        # Check if this giveaway is in the active giveaways list
-                        giveaway.is_running = any(
-                            ag['id'] == giveaway.id 
-                            for ag in status_data.get('active_giveaways', [])
-                        )
-                    else:
-                        giveaway.is_running = False
-                except requests.RequestException:
-                    # If we can't reach the chatbot, check if the process is still running
-                    try:
-                        process = psutil.Process(active_giveaway.process_id)
-                        giveaway.is_running = process.is_running()
-                    except psutil.NoSuchProcess:
-                        giveaway.is_running = False
-                        # Clean up stale active giveaway
-                        db_session.delete(active_giveaway)
-                        db_session.commit()
-            else:
-                giveaway.is_running = False
+            giveaway.is_running = active_giveaway is not None
 
         return render_template("dashboard.html", giveaways=giveaways)
     finally:
         db_session.close()
-
 
 @app.route("/giveaway/create", methods=["GET", "POST"])
 def create_giveaway():
@@ -372,7 +317,7 @@ def create_giveaway():
         db_session.close()
 
 
-        return redirect("/dashboard")
+        return redirect("/dashboard_view?from_chatbot=true")
 
     return render_template("create_giveaway.html")
 
@@ -420,15 +365,36 @@ def delete_giveaway(id):
     finally:
         db_session.close()
 
-    return redirect("/dashboard")
+    return redirect("/dashboard_view?from_chatbot=true")
 
 @app.route("/giveaway/start/<int:giveaway_id>")
-@ensure_chatbot_running
 def start_giveaway(giveaway_id):
     user_id = session.get("user_id")
     if not user_id:
         return redirect("/auth/twitch")
 
+    # First check if the chatbot service is responsive
+    chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+    try:
+        # Quick check to see if the chatbot is responding
+        response = requests.get(f"{chatbot_url}/wake", timeout=3)
+        if response.status_code != 200:
+            # Chatbot not responding correctly, redirect to wake it up
+            logger.warning(f"Chatbot service responded with non-200 status code: {response.status_code}")
+            return redirect_to_chatbot(f"/giveaway/start/{giveaway_id}")
+        
+        # Even with 200 status, check if it's actually ready
+        response_data = response.json()
+        if response_data.get('status') != 'awake' or not response_data.get('ready', False):
+            logger.warning(f"Chatbot service is up but not ready: {response_data}")
+            return redirect_to_chatbot(f"/giveaway/start/{giveaway_id}")
+            
+    except requests.RequestException as e:
+        # Chatbot not responding at all, redirect to wake it up
+        logger.warning(f"Chatbot service not responding: {str(e)}")
+        return redirect_to_chatbot(f"/giveaway/start/{giveaway_id}")
+
+    # If we get here, the chatbot is responsive, continue with starting the giveaway
     db_session = SessionLocal()
     try:
         # Check if giveaway exists and user has permission
@@ -439,7 +405,7 @@ def start_giveaway(giveaway_id):
         # Check if giveaway is already running
         active_giveaway = db_session.query(ActiveGiveaway).filter_by(giveaway_id=giveaway_id).first()
         if active_giveaway:
-                return "This giveaway is already running.", 400
+            return "This giveaway is already running.", 400
 
         # Get the creator's username to use as the channel name
         creator = db_session.query(User).filter_by(id=giveaway.creator_id).first()
@@ -447,26 +413,18 @@ def start_giveaway(giveaway_id):
             return "Creator information is incomplete.", 400
         
         channel_name = creator.channel_name or creator.username.lower()
-
-        # Check if chatbot is running - use environment variable for URL
-        chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
-        try:
-            response = requests.get(f'{chatbot_url}/wake', timeout=1)
-            if response.status_code != 200:
-                return "Chatbot is not running. Please start chatbot.py first.", 503
-        except requests.RequestException:
-            return "Chatbot is not running. Please start chatbot.py first.", 503
         
-        # Record the active giveaway
+        # Record the active giveaway - we'll use the main application's process ID
+        # The chatbot will pick this up during its polling cycle
         active_giveaway = ActiveGiveaway(
             giveaway_id=giveaway_id,
-            process_id=os.getpid(),  # Use the chatbot's process ID
+            process_id=os.getpid(),
             channel_name=channel_name
         )
         db_session.add(active_giveaway)
         db_session.commit()
-
-        return redirect("/dashboard")
+        
+        return redirect("/dashboard_view?from_chatbot=true")
 
     except Exception as e:
         db_session.rollback()
@@ -474,6 +432,25 @@ def start_giveaway(giveaway_id):
         return f"Failed to start giveaway: {str(e)}", 500
     finally:
         db_session.close()
+
+# Helper function to redirect to the chatbot with a return URL
+def redirect_to_chatbot(return_path):
+    chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
+    
+    # Get the current app's URL for the return path
+    main_app_url = os.getenv('MAIN_APP_URL', request.host_url.rstrip('/'))
+    return_url = f"{main_app_url}{return_path}"
+    encoded_url = urllib.parse.quote(return_url)
+    
+    # Redirect to the chatbot site
+    redirect_url = f"{chatbot_url}/?return_to={encoded_url}"
+    logger.info(f"Redirecting to chatbot to wake it up: {redirect_url}")
+    
+    # Show a loading page in the main app explaining what's happening
+    return render_template('error.html', 
+                          message="The chatbot service is currently starting up. Please wait a moment.",
+                          retry_after="10", 
+                          chatbot_url=chatbot_url)
 
 @app.route("/giveaway/edit/<int:id>", methods=["GET", "POST"])
 def edit_giveaway(id):
@@ -507,7 +484,7 @@ def edit_giveaway(id):
         giveaway.threshold = int(threshold)
         db_session.commit()
         db_session.close()
-        return redirect("/dashboard")
+        return redirect("/dashboard_view?from_chatbot=true")
 
     db_session.close()
     return render_template("edit_giveaway.html", giveaway=giveaway)
@@ -601,7 +578,7 @@ def stop_giveaway(giveaway_id):
         db_session.commit()
         logger.info(f"Giveaway {giveaway_id} stopped successfully")
 
-        return redirect("/dashboard")
+        return redirect("/dashboard_view?from_chatbot=true")
 
     except Exception as e:
         db_session.rollback()

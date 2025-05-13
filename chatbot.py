@@ -83,7 +83,8 @@ def wake():
         if not bot or not bot.is_ready:
             return jsonify({
                 "status": "starting",
-                "message": "Bot is initializing"
+                "message": "Bot is initializing",
+                "ready": False
             }), 200
         
         # Check if we can access the database
@@ -96,7 +97,8 @@ def wake():
             logger.error(f"Database connection test failed: {e}")
             return jsonify({
                 "status": "error",
-                "message": "Database connection error"
+                "message": "Database connection error",
+                "ready": False
             }), 200  # Still return 200 to indicate service is up
         
         return jsonify({
@@ -109,51 +111,39 @@ def wake():
         logger.error(f"Error in wake endpoint: {e}")
         return jsonify({
             "status": "error",
-            "message": "Internal server error"
+            "message": "Internal server error",
+            "ready": False
         }), 200  # Return 200 even on errors so we know the service is running
 
-@app.route('/wake_redirect')
-def wake_redirect():
-    # Get the return URL from query parameter first, then from session, then use default
+@app.route('/')
+def home():
+    # If there's a return_to parameter, store it in session
+    return_to = request.args.get('return_to')
+    if return_to:
+        session['return_to'] = return_to
+        logger.info(f"Stored return_to URL: {return_to}")
+    
+    # If user is already authenticated and is hunter_hues, show the status page
+    if 'user_id' in session and session.get('username') == 'hunter_hues':
+        return status_page()
+    
+    # Otherwise, redirect to Twitch auth
+    return redirect('/auth/twitch')
+
+@app.route('/status_page')
+@require_twitch_auth
+def status_page():
+    # Get return_to parameter from query string or session
     return_to = request.args.get('return_to')
     if not return_to and 'return_to' in session:
         return_to = session.get('return_to')
-        # Clear it from session once used
-        session.pop('return_to')
     
-    # If still not set, use the default
+    # Default to main app URL if no return_to is provided
+    main_app_url = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
     if not return_to:
-        return_to = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
+        return_to = main_app_url
     
-    # Store for potential auth flow
-    session['return_to'] = return_to
-    
-    # Check bot status
-    bot_status = "initializing"
-    if bot:
-        if bot.is_ready:
-            bot_status = "ready"
-        else:
-            bot_status = "starting"
-    
-    # Log the current status
-    logger.info(f"Bot status: {bot_status}, Return URL: {return_to}")
-    
-    # If the bot is ready, redirect back to the main app
-    if bot and bot.is_ready:
-        logger.info(f"Bot is ready, redirecting back to: {return_to}")
-        return redirect(return_to)
-    
-    # Otherwise, show the wake-up page with auto-refresh
-    # At this point, the server is running but the bot is still initializing
-    return render_template('wake_page.html', return_to=return_to)
-
-@app.route('/')
-@require_twitch_auth
-def status_page():
-    # Get return_to parameter from query string, or use environment variable
-    main_app_url = request.args.get('return_to', os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com'))
-    return render_template('chatbot_status.html', main_app_url=main_app_url)
+    return render_template('chatbot_status.html', main_app_url=return_to)
 
 @app.route('/status')
 def status_api():
@@ -197,10 +187,12 @@ def status_api():
 @app.route('/auth/twitch')
 def auth_twitch():
     # Store the return_to parameter in the session 
-    return_to = request.args.get('return_to', '')
+    return_to = request.args.get('return_to')
     if return_to:
         session['return_to'] = return_to
-        logger.info(f"Stored return_to in session: {return_to}")
+        logger.info(f"Stored return_to in session for auth flow: {return_to}")
+    elif 'return_to' in session:
+        logger.info(f"Using existing return_to from session: {session['return_to']}")
     
     logger.info(f"AUTH TWITCH: Using REDIRECT_URI: {REDIRECT_URI}")
     return redirect(
@@ -256,25 +248,28 @@ def auth_twitch_callback():
 
         user_info = user_data["data"][0]
         
-        # Instead of immediate redirect, provide a page with explanation
+        # If not admin user, redirect back to main app with from_chatbot parameter
         if user_info["display_name"].lower() != "hunter_hues":
             # Use environment variable with fallback to the known URL
             app_url = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
-            logger.info(f"Using main application URL from environment: {app_url}")
             
             # Get the return_to from session if available, otherwise use default URL
             return_to = session.get('return_to', app_url)
-            logger.info(f"Redirecting to: {return_to}")
             
-            # Clear the return_to from session
-            if 'return_to' in session:
-                session.pop('return_to')
+            # Add from_chatbot flag to the URL
+            if '?' in return_to:
+                redirect_url = f"{return_to}&from_chatbot=true"
+            else:
+                redirect_url = f"{return_to}?from_chatbot=true"
+                
+            logger.info(f"Non-admin user redirecting to: {redirect_url}")
             
-            # Use the redirect template
-            return render_template('redirect.html', redirect_url=return_to)
+            return redirect(redirect_url)
 
+        # Admin user (hunter_hues)
         session["user_id"] = user_info["id"]
         session["username"] = user_info["display_name"]
+        logger.info(f"Admin user {user_info['display_name']} authenticated")
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Twitch API error while fetching user data: {e}")

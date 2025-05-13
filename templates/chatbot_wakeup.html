@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Redirecting to RaffleBot</title>
-    <meta http-equiv="refresh" content="3;url={{ redirect_url }}">
+    <title>Starting Chatbot Service</title>
+    <meta http-equiv="refresh" content="5;url={{ return_url }}">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -34,10 +34,10 @@
             border: 4px solid rgba(255, 255, 255, 0.3);
             border-top: 4px solid #6a0dad;
             border-radius: 50%;
-            width: 30px;
-            height: 30px; 
+            width: 50px;
+            height: 50px;
             animation: spin 1s linear infinite;
-            margin: 20px auto;
+            margin: 30px auto;
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -63,16 +63,55 @@
             margin-top: 20px;
             font-style: italic;
         }
+        .progress-container {
+            width: 100%;
+            height: 10px;
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 5px;
+            margin: 15px 0;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #6a0dad;
+            border-radius: 5px;
+            transition: width 1s;
+            animation: progress 5s linear infinite;
+        }
+        @keyframes progress {
+            0% { width: 0%; }
+            100% { width: 100%; }
+        }
     </style>
+    <script>
+        // Countdown timer
+        let secondsLeft = 5;
+        
+        window.onload = function() {
+            const timerElement = document.getElementById('timer');
+            
+            // Update the timer every second
+            setInterval(function() {
+                secondsLeft--;
+                if (secondsLeft >= 0) {
+                    timerElement.textContent = secondsLeft;
+                }
+            }, 1000);
+        };
+    </script>
 </head>
 <body>
     <div class="container">
-        <h2>Chatbot Service Active</h2>
-        <p>The Twitch chatbot service is now active. You'll be redirected to the main RaffleBot application in 3 seconds.</p>
+        <h2>Starting Twitch Chatbot</h2>
+        <p>The chatbot service is being started to handle your giveaway. This typically takes a few seconds.</p>
         <div class="spinner"></div>
-        <p>If you're not redirected automatically, click the button below:</p>
-        <a href="{{ redirect_url }}" class="button">Continue to RaffleBot</a>
-        <p class="note">Note: The chatbot service will continue running in the background to handle your giveaways.</p>
+        <div class="progress-container">
+            <div class="progress-bar"></div>
+        </div>
+        <p>You'll be redirected back to continue starting your giveaway in <span id="timer">5</span> seconds.</p>
+        <a href="{{ return_url }}" class="button">Return to Giveaway</a>
+        <p class="note">Note: The chatbot service runs on Render's free tier, which puts services to sleep after inactivity.</p>
     </div>
 </body>
 </html> 
