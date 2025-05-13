@@ -228,35 +228,19 @@ def ensure_chatbot_running(f):
             logger.info(f"Sending initial wake request to {chatbot_url}")
             initial_response = requests.get(f'{chatbot_url}', timeout=5)
             logger.info(f"Initial wake response: {initial_response.status_code}")
+            
+            # If we get a successful response right away, continue
+            if initial_response.status_code == 200:
+                return f(*args, **kwargs)
         except requests.RequestException as e:
             logger.info(f"Initial wake request expected to fail during cold start: {str(e)}")
         
-        # Now try multiple times with increasing delays
-        max_retries = 6
-        retry_delay = 8
-        for attempt in range(max_retries):
-            try:
-                # Increase timeout for subsequent attempts
-                timeout = 10 + (attempt * 5)
-                logger.info(f"Wake attempt {attempt + 1}/{max_retries} with timeout {timeout}s")
-                
-                response = requests.get(f'{chatbot_url}/wake', timeout=timeout)
-                if response.status_code == 200:
-                    logger.info("Successfully sent wake request")
-                    return f(*args, **kwargs)
-            except requests.RequestException as e:
-                logger.warning(f"Attempt {attempt + 1}/{max_retries} to wake chatbot failed: {str(e)}")
-            
-            # Wait longer between each retry
-            wait_time = retry_delay * (attempt + 1)
-            logger.info(f"Waiting {wait_time}s before next retry...")
-            time.sleep(wait_time)
-        
-        # If we get here, we couldn't wake the chatbot
+        # Instead of making multiple retry attempts with increasing timeouts that block the request,
+        # we'll immediately serve a page that instructs the user to wait and auto-refreshes
         return render_template(
             "error.html",
             message="Chatbot service is currently starting up. Render's free tier can take up to 50 seconds to initialize after inactivity. Please wait while the service starts...",
-            retry_after=20,
+            retry_after=10,  # Check again in 10 seconds
             chatbot_url=chatbot_url
         ), 202  # 202 Accepted indicates the request is processing
     return decorated_function
