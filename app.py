@@ -224,6 +224,16 @@ def ensure_chatbot_running(f):
     def decorated_function(*args, **kwargs):
         chatbot_url = os.getenv('CHATBOT_URL', 'http://localhost:5001')
         
+        # Check if we're in a redirect loop by looking for a flag in the query string
+        if request.args.get('chatbot_redirect_attempted') == 'true':
+            # If we've already tried redirecting, just render the error template
+            return render_template(
+                "error.html",
+                message="Chatbot service is currently unavailable. It may take up to a minute to start on Render's free tier.",
+                retry_after=10,
+                chatbot_url=chatbot_url
+            ), 202
+        
         # Store the requested URL to redirect back after chatbot wakes up
         current_url = request.url
         
@@ -234,14 +244,42 @@ def ensure_chatbot_running(f):
         # The Flask server at the chatbot will start immediately, but the Twitch bot
         # might take a few moments to fully initialize and connect to Twitch.
         # The chatbot will check if the bot is ready and redirect back once it's ready.
-        wake_redirect_url = f"{chatbot_url}/wake_redirect?return_to={encoded_url}"
-        logger.info(f"Redirecting to wake up Twitch bot: {wake_redirect_url}")
         
-        return redirect(wake_redirect_url)
+        # Add a flag to indicate we've attempted a redirect
+        if '?' in current_url:
+            redirect_back_url = f"{current_url}&chatbot_redirect_attempted=true"
+        else:
+            redirect_back_url = f"{current_url}?chatbot_redirect_attempted=true"
         
+        encoded_redirect_back = urllib.parse.quote(redirect_back_url)
+        
+        # Try to make a quick check if the chatbot service is responding at all
+        try:
+            logger.info(f"Checking if chatbot service is responding at {chatbot_url}")
+            response = requests.get(f"{chatbot_url}/wake", timeout=2)
+            if response.status_code == 200:
+                logger.info("Chatbot service is responding, redirecting to wake_redirect endpoint")
+                wake_redirect_url = f"{chatbot_url}/wake_redirect?return_to={encoded_url}"
+                logger.info(f"Redirecting to wake up Twitch bot: {wake_redirect_url}")
+                return redirect(wake_redirect_url)
+            else:
+                logger.warning(f"Chatbot service responded with status {response.status_code}")
+        except requests.RequestException as e:
+            logger.warning(f"Chatbot service is not responding: {str(e)}")
+        
+        # If we get here, the chatbot service isn't responding at all
+        # Show an error page instead of redirecting in a loop
+        return render_template(
+            "error.html",
+            message="Chatbot service is starting up. Please wait a moment and refresh this page.",
+            retry_after=10,
+            chatbot_url=chatbot_url
+        ), 202
+    
     return decorated_function
 
 @app.route("/dashboard")
+@limiter.limit("30/minute")  # Higher limit for dashboard
 @ensure_chatbot_running
 def dashboard():
     user_id = session.get("user_id")

@@ -49,7 +49,7 @@
             margin-top: 20px;
         }
         .manual-button {
-            display: none;
+            display: block;
             margin-top: 30px;
         }
         .manual-button button {
@@ -86,10 +86,22 @@
             border-radius: 5px;
             transition: width 1s;
         }
+        .retry-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #6a0dad;
+            background-color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 25px;
+            font-weight: bold;
+        }
+        .retry-link:hover {
+            background-color: #f0f0f0;
+        }
     </style>
     <script>
         // Configuration
-        const SHOW_MANUAL_BUTTON_AFTER = 30; // show manual button after 30 seconds
         const REFRESH_INTERVAL = parseInt("{{ retry_after }}"); // seconds between auto-refresh
         
         // Variables
@@ -97,19 +109,22 @@
         
         // When page loads, start the timer
         document.addEventListener('DOMContentLoaded', function() {
-            // Start progress bar animation
             const progressBar = document.getElementById('progressBar');
-            updateProgressBar();
+            if (progressBar) {
+                updateProgressBar();
+            }
             
             // Start timer to count seconds
             const timerInterval = setInterval(function() {
                 secondsElapsed++;
-                updateTimerDisplay();
-                updateProgressBar();
                 
-                // After specified time, show the manual button
-                if (secondsElapsed >= SHOW_MANUAL_BUTTON_AFTER) {
-                    document.getElementById('manualButton').style.display = 'block';
+                const timerElement = document.getElementById('timer');
+                if (timerElement) {
+                    updateTimerDisplay();
+                }
+                
+                if (progressBar) {
+                    updateProgressBar();
                 }
                 
                 // If we've reached the refresh time, no need to update anymore
@@ -118,16 +133,14 @@
                 }
             }, 1000);
             
-            // Add click handler for manual button
-            document.getElementById('openChatbotBtn').addEventListener('click', function() {
-                const chatbotUrl = "{{ chatbot_url }}";
-                window.open(chatbotUrl, '_blank');
-                
-                // After opening the chatbot in a new tab, wait 5 seconds and refresh this page
-                setTimeout(function() {
-                    window.location.reload();
-                }, 5000);
-            });
+            // Add click handler for manual button if it exists
+            const chatbotBtn = document.getElementById('openChatbotBtn');
+            if (chatbotBtn) {
+                chatbotBtn.addEventListener('click', function() {
+                    const chatbotUrl = "{{ chatbot_url }}";
+                    window.open(chatbotUrl, '_blank');
+                });
+            }
         });
         
         // Update the timer display
@@ -136,7 +149,7 @@
             const remainingTime = REFRESH_INTERVAL - secondsElapsed;
             
             if (remainingTime > 0) {
-                timerElement.textContent = `Checking again in ${remainingTime} seconds...`;
+                timerElement.textContent = `Refreshing in ${remainingTime} seconds...`;
             } else {
                 timerElement.textContent = 'Refreshing page...';
             }
@@ -160,12 +173,13 @@
             <div class="progress-bar" id="progressBar"></div>
         </div>
         
-        <div class="timer" id="timer">Checking again in {{ retry_after }} seconds...</div>
+        <div class="timer" id="timer">Refreshing in {{ retry_after }} seconds...</div>
         
-        <div class="manual-button" id="manualButton">
-            <button id="openChatbotBtn">Speed Up: Open Chatbot Service in New Tab</button>
-            <p class="note">Opening the chatbot in a new tab will help wake it up faster.</p>
+        <div class="manual-button">
+            <button id="openChatbotBtn">Open Chatbot Service in New Tab</button>
         </div>
+        
+        <a class="retry-link" href="/">Return to Home Page</a>
         
         <p class="note">This service runs on Render's free tier, which puts services to sleep after inactivity. It typically takes 30-50 seconds to wake up completely.</p>
     </div>
