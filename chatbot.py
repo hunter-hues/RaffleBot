@@ -218,10 +218,12 @@ def auth_twitch_callback():
             app_url = os.getenv('MAIN_APP_URL', 'https://rafflebot-site.onrender.com')
             logger.info(f"Using main application URL from environment: {app_url}")
             
-            redirect_url = f"{app_url}/auth/twitch/callback?code={code}"
-            logger.info(f"Redirecting to: {redirect_url}")
+            # Redirect to the main app's home page instead of passing the code
+            # (which won't work because the code would be used twice)
+            redirect_url = app_url
+            logger.info(f"Redirecting to main app home: {redirect_url}")
             
-            # Use the redirect template instead of inline HTML
+            # Use the redirect template 
             return render_template('redirect.html', redirect_url=redirect_url)
 
         session["user_id"] = user_info["id"]
