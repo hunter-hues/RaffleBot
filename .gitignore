@@ -79,3 +79,4 @@ flask_session/
 *.swp
 *~
 .env copy
+clear_database_data.py
