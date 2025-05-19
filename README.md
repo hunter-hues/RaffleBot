@@ -1,4 +1,5 @@
 # RaffleBot - Twitch Giveaway Platform
+(This project currently uses Render's free tier, so both the chatbot and site services must be woken up independently. Visiting either one will redirect you to the other when appropriate/needed.)
 
 ## Live Demo
 - **Website:** [https://rafflebot-site.onrender.com](https://rafflebot-site.onrender.com)
